@@ -156,6 +156,7 @@ jobs:
             --output .orchestration/run-manifest.json
 
       - name: Wait for captured batch runs
+        id: wait
         env:
           BRANCH: ${{ steps.context.outputs.branch }}
           EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
@@ -167,6 +168,15 @@ jobs:
           helper=".github/scripts/orchestration_contract.py"
           manifest=".orchestration/run-manifest.json"
           failed_batches=()
+
+          retry_delay() {
+            local failures="$1"
+            local delay=$((15 * (1 << (failures - 1))))
+            if (( delay > 120 )); then
+              delay=120
+            fi
+            printf '%s\n' "$delay"
+          }
 
           for i in {1..22}; do
             WORKFLOW="test-all-packages-batch${i}.yml"
@@ -188,7 +198,9 @@ jobs:
                   echo "Infrastructure lookup failed repeatedly for run $RUN_ID."
                   exit 1
                 fi
-                sleep 15
+                delay="$(retry_delay "$api_failures")"
+                echo "Transient lookup failure for run $RUN_ID; retrying in ${delay}s."
+                sleep "$delay"
                 continue
               fi
               api_failures=0
@@ -223,13 +235,18 @@ jobs:
             fi
           done
 
-          if [[ "${#failed_batches[@]}" -gt 0 ]]; then
+          failed_batch_count="${#failed_batches[@]}"
+          if [[ "$failed_batch_count" -gt 0 ]]; then
             echo "One or more captured batch runs failed:"
             printf ' - %s\n' "${failed_batches[@]}"
-            exit 1
+          else
+            echo "All captured batch runs completed successfully."
           fi
+          printf 'failed_batch_count=%s\n' "$failed_batch_count" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch exact global summary
+        id: summary
+        if: ${{ steps.wait.outcome == 'success' }}
         env:
           BRANCH: ${{ steps.context.outputs.branch }}
           EXPECTED_SHA: ${{ steps.context.outputs.expected_sha }}
@@ -245,6 +262,16 @@ jobs:
           summary_nonce_file=".orchestration/summary-dispatch-nonce"
           summary_registration_payload=".orchestration/summary-registration.json"
           summary_run_payload=".orchestration/summary-run.json"
+
+          retry_delay() {
+            local failures="$1"
+            local delay=$((15 * (1 << (failures - 1))))
+            if (( delay > 120 )); then
+              delay=120
+            fi
+            printf '%s\n' "$delay"
+          }
+
           python3 "$helper" generate-dispatch-nonce \
             --output "$summary_nonce_file"
           python3 "$helper" summary-dispatch-payload \
@@ -261,8 +288,10 @@ jobs:
             --input .orchestration/summary-dispatch.json
 
           summary_run_id=""
+          summary_api_failures=0
           for attempt in {1..18}; do
             if gh api --paginate --slurp "$summary_endpoint" > "$summary_registration_payload"; then
+              summary_api_failures=0
               summary_run_id="$(python3 "$helper" select-summary-registration \
                 --payload "$summary_registration_payload" \
                 --manifest .orchestration/run-manifest.json \
@@ -273,9 +302,19 @@ jobs:
               if [[ -n "$summary_run_id" ]]; then
                 break
               fi
+              echo "Exact Global Summary run is not visible yet (attempt $attempt/18)."
+              sleep 10
+              continue
             fi
-            echo "Exact Global Summary run is not visible yet (attempt $attempt/18)."
-            sleep 10
+
+            summary_api_failures=$((summary_api_failures + 1))
+            if [[ "$summary_api_failures" -ge 5 ]]; then
+              echo "Infrastructure lookup failed repeatedly while registering Global Summary."
+              exit 1
+            fi
+            delay="$(retry_delay "$summary_api_failures")"
+            echo "Transient Global Summary registration failure; retrying in ${delay}s."
+            sleep "$delay"
           done
 
           if [[ -z "$summary_run_id" ]]; then
@@ -284,10 +323,22 @@ jobs:
           fi
 
           echo "Tracking Global Summary run $summary_run_id."
+          summary_api_failures=0
           for attempt in {1..120}; do
-            gh api \
+            if ! gh api \
               "repos/${REPOSITORY}/actions/runs/${summary_run_id}" \
-              > "$summary_run_payload"
+              > "$summary_run_payload"; then
+              summary_api_failures=$((summary_api_failures + 1))
+              if [[ "$summary_api_failures" -ge 5 ]]; then
+                echo "Infrastructure lookup failed repeatedly for Global Summary run $summary_run_id."
+                exit 1
+              fi
+              delay="$(retry_delay "$summary_api_failures")"
+              echo "Transient lookup failure for Global Summary run $summary_run_id; retrying in ${delay}s."
+              sleep "$delay"
+              continue
+            fi
+            summary_api_failures=0
             run_state="$(python3 "$helper" validate-summary-run \
               --payload "$summary_run_payload" \
               --manifest .orchestration/run-manifest.json \
@@ -312,3 +363,31 @@ jobs:
 
           echo "Global Summary run $summary_run_id did not complete within the bounded wait."
           exit 1
+
+      - name: Conclude exact orchestration
+        if: ${{ always() && steps.wait.outcome == 'success' }}
+        env:
+          FAILED_BATCH_COUNT: ${{ steps.wait.outputs.failed_batch_count }}
+          SUMMARY_OUTCOME: ${{ steps.summary.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$FAILED_BATCH_COUNT" =~ ^[0-9]+$ ]]; then
+            echo "Captured batch failure count is missing or malformed."
+            exit 1
+          fi
+
+          orchestration_failed=false
+          if [[ "$SUMMARY_OUTCOME" != "success" ]]; then
+            echo "Exact Global Summary did not complete successfully (outcome: $SUMMARY_OUTCOME)."
+            orchestration_failed=true
+          fi
+          if [[ "$FAILED_BATCH_COUNT" -gt 0 ]]; then
+            echo "$FAILED_BATCH_COUNT captured batch run(s) completed with non-success conclusions."
+            orchestration_failed=true
+          fi
+
+          if [[ "$orchestration_failed" == "true" ]]; then
+            exit 1
+          fi
+          echo "All exact batch runs and the exact Global Summary completed successfully."
+

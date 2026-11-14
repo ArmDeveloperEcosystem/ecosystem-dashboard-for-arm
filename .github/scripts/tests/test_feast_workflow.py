@@ -239,25 +239,29 @@ class FeastWorkflowTests(unittest.TestCase):
 
     def test_candidate_rejects_wrong_tag_old_version_and_failed_install(self):
         self.steps["probe"] = {"run": self.steps["candidate"]["with"]["limited_cpu_probe"]}
+        self.assertEqual("feast", self.steps["candidate"]["with"]["pypi_package"])
         environment = self.stub_commands()
-        for version, tag, valid in (("0.66.0", "v0.66.0", True), ("0.66.0", "v0.10.4", False),
-                                   ("0.10.4", "v0.10.4", False), ("0.1.0", "v0.1.0", False)):
+        for version, tag, valid in (("0.66.0", "0.66.0", True), ("0.66.0", "v0.66.0", False),
+                                   ("0.10.4", "0.10.4", False), ("0.1.0", "0.1.0", False)):
             result, _ = self.run_step("probe", **{**environment, "LATEST_VERSION": version,
                 "CANDIDATE_TAG": tag, "FEAST_INSTALL_COMMAND": "exit 31"})
             self.assertEqual(31 if valid else 1, result.returncode, result.stderr)
         self.assertEqual("false", self.steps["candidate"]["with"]["defer_on_limited_cpu_probe_failure"])
 
-    def test_candidate_rejects_missing_source_and_failed_smoke_after_install(self):
+    def test_candidate_lookup_and_job_runtime_are_bounded(self):
+        self.assertEqual(45, self.job["timeout-minutes"])
+        probe = self.steps["candidate"]["with"]["limited_cpu_probe"]
+        self.assertIn("timeout 30 git ls-remote --exit-code --tags", probe)
+
+    def test_candidate_rejects_missing_release_tag_and_failed_smoke_after_install(self):
         self.steps["probe"] = {"run": self.steps["candidate"]["with"]["limited_cpu_probe"]}
         environment = self.stub_commands()
         runtime = self.root / "feast-next-venv/bin"
         runtime.mkdir(parents=True)
         (runtime / "activate").write_text(":\n")
-        environment.update(LATEST_VERSION="0.66.0", CANDIDATE_TAG="v0.66.0",
+        environment.update(LATEST_VERSION="0.66.0", CANDIDATE_TAG="0.66.0",
                            FEAST_INSTALL_COMMAND="true", FEAST_SMOKE_COMMAND="exit 37")
-        for changes, expected in (({}, 37), ({"GIT_RC": "19"}, 19),
-                                  ({"HEAD_COMMIT": "", "TAG_COMMIT": ""}, 1),
-                                  ({"TAG_COMMIT": "wrong"}, 1)):
+        for changes, expected in (({}, 37), ({"GIT_RC": "19"}, 19), ({"TAG_COMMIT": ""}, 1)):
             result, _ = self.run_step("probe", **{**environment, **changes})
             self.assertEqual(expected, result.returncode, result.stderr)
 
@@ -289,6 +293,7 @@ class FeastWorkflowTests(unittest.TestCase):
     def test_actual_steps_emit_auditable_status_duration_and_decision_pairs(self):
         self.assertEqual("${{ steps.test6.outputs.decision || 'not_configured' }}",
                          self.job["outputs"]["regression_decision"])
+        self.assertNotIn("continue-on-error", self.steps["test6"])
         for number in range(1, 7):
             for output in ("status", "duration"):
                 with self.subTest(number=number, output=output):
@@ -348,7 +353,7 @@ class FeastWorkflowTests(unittest.TestCase):
         self.steps["composite"] = body
         inputs = {f"inputs.{key}": str(value.get("default", "")) for key, value in action["inputs"].items()}
         inputs.update({"inputs.baseline_version": self.baseline, "inputs.github_repo": "feast-dev/feast",
-                       "inputs.next_version_override": "0.66.0", "inputs.candidate_tag_override": "v0.66.0",
+                       "inputs.next_version_override": "0.66.0", "inputs.candidate_tag_override": "0.66.0",
                        "inputs.limited_cpu_probe": self.steps["candidate"]["with"]["limited_cpu_probe"],
                        "inputs.limited_cpu_description": self.steps["candidate"]["with"]["limited_cpu_description"]})
         environment = self.stub_commands()
@@ -429,3 +434,4 @@ class FeastWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
