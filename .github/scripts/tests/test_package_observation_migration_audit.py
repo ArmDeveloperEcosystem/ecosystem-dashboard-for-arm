@@ -135,7 +135,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
              'core_failed': 381,
              'passed': 6,
              'failed': 6,
-             'skipped': 699,
+             'skipped': 698,
              'duration': 9},
             {
                 key: len(value)
@@ -207,7 +207,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            374,
+            373,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertIn(
@@ -257,7 +257,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            '4e0cd579eddb73894ff063a183b842427ca159ba81d5058a2998071d716801bf',
+            '9cb538c0ec520774062742d044c01602ed423f3664774f08400de4aba9ce60de',
             digest,
         )
 
