@@ -144,16 +144,38 @@ exit "${FIXTURE_XPROP_RC:-0}"
 
     def runtime_fixture(self):
         self.window_fixture()
+        download_helper = self.root / ".github/scripts/download-with-fallback.sh"
+        download_helper.parent.mkdir(parents=True)
+        download_helper.write_text(r'''#!/bin/bash
+set -euo pipefail
+output="$1"
+url="$2"
+if curl -o "$output" "$url"; then
+  exit 0
+fi
+wget -O "$output" "$url"
+''')
+        download_helper.chmod(0o755)
+        self.env["GITHUB_WORKSPACE"] = str(self.root)
         self.stub("uname", 'echo "${FIXTURE_ARCH:-aarch64}"\n')
         self.stub("sudo", 'echo apt-diagnostic; exit "${FIXTURE_APT_RC:-0}"\n')
         self.stub("curl", r'''
 if [ "${FIXTURE_CURL_RC:-0}" != 0 ]; then echo fetch-failed >&2; exit "$FIXTURE_CURL_RC"; fi
-if [[ "$*" == *api.github.com* ]]; then
-  printf '%s\n' '{"assets":[{"name":"LibreCAD-aarch64.AppImage","browser_download_url":"https://fixture.invalid/aarch64.AppImage"}]}'
-  exit 0
-fi
 while [ "$1" != -o ]; do shift; done
 cp "$FIXTURE_EXTRACTOR" "$2"
+''')
+        self.stub("wget", 'exit "${FIXTURE_WGET_RC:-${FIXTURE_CURL_RC:-1}}"\n')
+        self.stub("sha256sum", r'''
+test "$1" = -c
+test "$2" = -
+read -r digest path
+test "$digest" = 41f69d455d8dae292bdbf4c9cfc69198ac8aab56498e3d05f6f0c6ce5906cc2b
+test -s "$path"
+if [ "${FIXTURE_CHECKSUM_RC:-0}" != 0 ]; then
+  echo "$path: FAILED"
+  exit "$FIXTURE_CHECKSUM_RC"
+fi
+echo "$path: OK"
 ''')
         self.stub("file", r'''
 arch=aarch64
@@ -196,6 +218,20 @@ ln -s usr/bin/librecad squashfs-root/AppRun
         self.env.update(FIXTURE_EXTRACTOR=str(self.bin / "fixture-extractor"),
                         FIXTURE_APP=str(self.bin / "fixture-app"))
 
+    def test_candidate_uses_pinned_official_asset_and_checksum(self):
+        script = self.steps["test6"]["with"]["limited_cpu_probe"]
+        self.assertIn(
+            'https://github.com/${GITHUB_REPO}/releases/download/${CANDIDATE_TAG}/${ASSET_NAME}',
+            script,
+        )
+        self.assertIn(
+            'ASSET_SHA256="41f69d455d8dae292bdbf4c9cfc69198ac8aab56498e3d05f6f0c6ce5906cc2b"',
+            script,
+        )
+        self.assertIn("download-with-fallback.sh", script)
+        self.assertIn("sha256sum -c -", script)
+        self.assertNotIn("api.github.com", script)
+
     def test_runtime_baseline_and_candidate_require_full_probe(self):
         self.runtime_fixture()
         result, output = self.run_step("test5")
@@ -206,6 +242,16 @@ ln -s usr/bin/librecad squashfs-root/AppRun
         result, _ = self.run_script(self.steps["test6"]["with"]["limited_cpu_probe"],
                                     LATEST_VERSION="2.2.1.5", CANDIDATE_TAG="v2.2.1.5")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_candidate_rejects_checksum_mismatch(self):
+        self.runtime_fixture()
+        result, _ = self.run_script(
+            self.steps["test6"]["with"]["limited_cpu_probe"],
+            LATEST_VERSION="2.2.1.5",
+            CANDIDATE_TAG="v2.2.1.5",
+            FIXTURE_CHECKSUM_RC="1",
+        )
+        self.assertNotEqual(0, result.returncode)
 
     def test_runtime_waits_for_complete_window_proof_after_slow_xprop(self):
         self.runtime_fixture()
