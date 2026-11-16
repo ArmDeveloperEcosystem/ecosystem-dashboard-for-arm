@@ -172,7 +172,7 @@ fi
         helper_start = full_script.index("fail_regression()")
         helper_end = full_script.index("\nunexpected_regression_failure()", helper_start)
         source_start = full_script.index('rm -rf "${NEXT_DIR}"')
-        source_end = full_script.index("UROOT_COMMIT=", source_start)
+        source_end = full_script.index("# Candidate v0.5.1 pins", source_start)
         script = full_script[helper_start:helper_end] + "\n" + full_script[source_start:source_end]
         for name in ("git-calls", "output"):
             (self.root / name).write_text("")
@@ -185,6 +185,76 @@ fi
             timeout=10,
         )
         return result, self.lines("output"), self.lines("git-calls")
+
+    def run_candidate_toolchain(self, scenario="success"):
+        self.stub("curl", f"#!{sys.executable}\n" + r'''
+import os
+from pathlib import Path
+import sys
+
+root = Path(os.environ["FIXTURE_ROOT"])
+with (root / "curl-calls").open("a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if os.environ["TOOLCHAIN_SCENARIO"] == "download-fail":
+    sys.exit(7)
+output = Path(sys.argv[sys.argv.index("--output") + 1])
+output.write_bytes(b"verified fixture archive")
+''')
+        self.stub("sha256sum", f"#!{sys.executable}\n" + r'''
+import os
+from pathlib import Path
+import sys
+
+root = Path(os.environ["FIXTURE_ROOT"])
+with (root / "sha-calls").open("a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+value = os.environ["SUBMARINE_NEXT_GO_ARCHIVE_SHA256"]
+if os.environ["TOOLCHAIN_SCENARIO"] == "checksum-mismatch":
+    value = "0" * 64
+print(value, sys.argv[1])
+''')
+        self.stub("tar", f"#!{sys.executable}\n" + r'''
+import os
+from pathlib import Path
+import sys
+
+root = Path(os.environ["FIXTURE_ROOT"])
+with (root / "tar-calls").open("a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if os.environ["TOOLCHAIN_SCENARIO"] == "extract-fail":
+    sys.exit(2)
+target = Path(sys.argv[sys.argv.index("--directory") + 1])
+(target / "bin").mkdir(parents=True, exist_ok=True)
+go = target / "bin" / "go"
+go.write_text("#!/bin/sh\nprintf '%s\\n' \"$TOOLCHAIN_ID\"\n")
+go.chmod(0o755)
+''')
+        full_script = self.steps["test6"]["run"]
+        helper_start = full_script.index("fail_regression()")
+        helper_end = full_script.index("\nunexpected_regression_failure()", helper_start)
+        toolchain_start = full_script.index("GO_ARCHIVE=")
+        toolchain_end = full_script.index("UROOT_COMMIT=", toolchain_start)
+        script = full_script[helper_start:helper_end] + "\n" + full_script[toolchain_start:toolchain_end]
+        for name in ("curl-calls", "sha-calls", "tar-calls", "output"):
+            (self.root / name).write_text("")
+        toolchain_id = "go version go1.26.6 linux/arm64"
+        if scenario == "wrong-identity":
+            toolchain_id = "go version go1.26.6 linux/amd64"
+        result = subprocess.run(
+            ["/bin/bash", "-e", "-u", "-o", "pipefail", "-c", script],
+            cwd=self.root,
+            env=dict(
+                self.env,
+                SUBMARINE_WORKROOT=str(self.root / "work"),
+                TOOLCHAIN_SCENARIO=scenario,
+                TOOLCHAIN_ID=toolchain_id,
+            ),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual([], list(self.tmp.iterdir()), "Toolchain archive should be cleaned up")
+        return result, self.lines("output")
 
     def test_success_does_not_retry_or_sleep(self):
         for step in ("install", "test6"):
@@ -288,6 +358,15 @@ fi
             "a2e60395030115263af276eabd6f8da0a21a84a9",
             self.job["env"]["SUBMARINE_NEXT_SOURCE_COMMIT"],
         )
+        self.assertEqual("1.26.6", self.job["env"]["SUBMARINE_NEXT_GO_VERSION"])
+        self.assertEqual(
+            "https://go.dev/dl/go1.26.6.linux-arm64.tar.gz",
+            self.job["env"]["SUBMARINE_NEXT_GO_ARCHIVE_URL"],
+        )
+        self.assertEqual(
+            "d0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e",
+            self.job["env"]["SUBMARINE_NEXT_GO_ARCHIVE_SHA256"],
+        )
         self.assertEqual("https://github.com/FyraLabs/submarine.git", self.job["env"]["SUBMARINE_REPO"])
         self.assertEqual(
             "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
@@ -355,6 +434,38 @@ fi
         for number in range(1, 6):
             self.assertNotRegex(self.steps[f"test{number}"]["run"], r"(?i)retry|ATTEMPT|sleep ")
         self.assertNotRegex(WORKFLOW.read_text(), r"GOPROXY|GOSUMDB|GONOSUMDB|insecure")
+
+        candidate = self.steps["test6"]["run"]
+        self.assertIn("--proto '=https' --proto-redir '=https' --tlsv1.2", candidate)
+        self.assertIn('sha256sum "${GO_ARCHIVE}"', candidate)
+        self.assertIn(
+            '"go version go${SUBMARINE_NEXT_GO_VERSION} linux/arm64"',
+            candidate,
+        )
+        self.assertIn("export GOTOOLCHAIN=local", candidate)
+
+    def test_candidate_toolchain_is_pinned_verified_and_fail_closed(self):
+        result, output = self.run_candidate_toolchain()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], output)
+        curl_call = self.lines("curl-calls")
+        self.assertEqual(1, len(curl_call))
+        self.assertIn("--retry 3 --retry-all-errors", curl_call[0])
+        self.assertIn("https://go.dev/dl/go1.26.6.linux-arm64.tar.gz", curl_call[0])
+        self.assertEqual(1, len(self.lines("sha-calls")))
+        self.assertEqual(1, len(self.lines("tar-calls")))
+
+        for scenario in (
+            "download-fail",
+            "checksum-mismatch",
+            "extract-fail",
+            "wrong-identity",
+        ):
+            with self.subTest(scenario=scenario):
+                result, output = self.run_candidate_toolchain(scenario)
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn("decision=next_install_failed", output)
+                self.assertIn("status=failed", output)
 
     def test_regression_failures_emit_policy_approved_outputs(self):
         script = self.steps["test6"]["run"]
