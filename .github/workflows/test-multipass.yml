@@ -77,6 +77,7 @@ on:
 jobs:
   test-multipass:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
@@ -84,13 +85,13 @@ jobs:
       package_version: ${{ steps.version.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
-      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '1' }}
       tests_passed: ${{ steps.summary.outputs.passed || '0' }}
-      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
-      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '1' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '5' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'baseline_install_failed' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
@@ -125,9 +126,9 @@ jobs:
           set -euo pipefail
           clear_inflight_change() {
             local change_id=""
-            change_id="$(sudo snap changes --abs-time 2>/dev/null | awk 'NR > 1 && /multipass/ && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
+            change_id="$(timeout --kill-after=5s 30s sudo snap changes --abs-time 2>/dev/null | awk 'NR > 1 && /multipass/ && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
             if [ -n "$change_id" ]; then
-              timeout 120 sudo snap watch "$change_id" >/dev/null 2>&1 || sudo snap abort "$change_id" >/dev/null 2>&1 || true
+              timeout --kill-after=5s 120s sudo snap watch "$change_id" >/dev/null 2>&1 || timeout --kill-after=5s 30s sudo snap abort "$change_id" >/dev/null 2>&1 || true
             fi
           }
 
@@ -135,13 +136,13 @@ jobs:
           [ "$RUNNER_ENVIRONMENT" = github-hosted ]
           [ "$(uname -m)" = aarch64 ]
           sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
-          sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+          timeout --kill-after=5s 120s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
 
           : > multipass-install.log
           install_ok=0
           for attempt in 1 2 3; do
             echo "Multipass install attempt ${attempt}/3"
-            if snap list multipass >/dev/null 2>&1; then
+            if timeout --kill-after=5s 30s snap list multipass >/dev/null 2>&1; then
               install_ok=1
               break
             fi
@@ -151,9 +152,9 @@ jobs:
               break
             fi
             clear_inflight_change
-            sudo snap remove --purge multipass >/dev/null 2>&1 || true
+            timeout --kill-after=5s 60s sudo snap remove --purge multipass >/dev/null 2>&1 || true
             sudo systemctl restart snapd.socket snapd.service >/dev/null 2>&1 || true
-            sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+            timeout --kill-after=5s 120s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
             sleep 15
           done
 
@@ -239,7 +240,6 @@ jobs:
       - name: Test 1 - Check multipass binary
         id: test1
         if: always()
-        continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -262,8 +262,7 @@ jobs:
 
       - name: Test 2 - Check version command
         id: test2
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -279,12 +278,6 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != success ]; then
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
-            trap - EXIT
-            exit 0
-          fi
           [ "${{ steps.version.outcome }}" = success ]
           RC=0
           timeout --kill-after=5s 30s multipass --version > multipass-version.txt 2> multipass-version-text.stderr || RC=$?
@@ -304,8 +297,7 @@ jobs:
 
       - name: Test 3 - Check CLI help
         id: test3
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -321,12 +313,6 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != success ]; then
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
-            trap - EXIT
-            exit 0
-          fi
           RC=0
           LC_ALL=C timeout --kill-after=5s 30s multipass --help > multipass-help.txt 2> multipass-help.stderr || RC=$?
           cat multipass-help.txt
@@ -340,8 +326,7 @@ jobs:
 
       - name: Test 4 - List available images (find)
         id: test4
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -357,12 +342,6 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != success ]; then
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
-            trap - EXIT
-            exit 0
-          fi
           # Query image metadata only; do not launch a VM or require nested virtualization.
           # Use the installing identity for the owned hosted daemon's restricted socket.
           RC=0
@@ -396,8 +375,7 @@ jobs:
 
       - name: Test 5 - Architecture Verification
         id: test5
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -413,13 +391,16 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != success ]; then
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "duration=$(($(date +%s) - START_TIME))" >> "$GITHUB_OUTPUT"
-            trap - EXIT
-            exit 0
-          fi
-          [ "$(uname -m)" = aarch64 ]
+          MATCHED=0
+          while IFS= read -r PAYLOAD; do
+            echo "Inspecting $PAYLOAD"
+            if readelf -h "$PAYLOAD" 2>/dev/null | grep -Eq 'Machine:[[:space:]]+AArch64'; then
+              MATCHED=1
+              break
+            fi
+          done < <(find /snap/multipass/current -type f -name multipass -perm /111 -print | LC_ALL=C sort)
+          [ "$MATCHED" -eq 1 ]
+          echo "Installed Multipass payload is an AArch64 ELF executable"
           finish 0
 
 
@@ -477,11 +458,11 @@ jobs:
           test3_label: Test 3 - Check CLI help
           test4_label: Test 4 - List available images
           test5_label: Test 5 - Architecture Verification
-          test1_status: ${{ steps.test1.outputs.status || 'skipped' }}
-          test2_status: ${{ steps.test2.outputs.status || 'skipped' }}
-          test3_status: ${{ steps.test3.outputs.status || 'skipped' }}
-          test4_status: ${{ steps.test4.outputs.status || 'skipped' }}
-          test5_status: ${{ steps.test5.outputs.status || 'skipped' }}
+          test1_status: ${{ steps.test1.outcome || 'skipped' }}
+          test2_status: ${{ steps.test2.outcome || 'skipped' }}
+          test3_status: ${{ steps.test3.outcome || 'skipped' }}
+          test4_status: ${{ steps.test4.outcome || 'skipped' }}
+          test5_status: ${{ steps.test5.outcome || 'skipped' }}
           test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
           test1_duration: ${{ steps.test1.outputs.duration || 0 }}
           test2_duration: ${{ steps.test2.outputs.duration || 0 }}
