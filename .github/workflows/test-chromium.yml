@@ -127,26 +127,79 @@ jobs:
           APT_INSTALL_TIMEOUT_SECONDS: "300"
         run: |
           set -euo pipefail
-          install_rc=0
+          dependency_rc=0
           bash .github/actions/apt-bootstrap/bootstrap.sh \
-            --packages "chromium python3 binutils" \
+            --packages "python3 binutils" \
             --retries 3 \
             --initial-backoff-seconds 10 \
-            2>&1 | tee "$RUNNER_TEMP/chromium-install.log" || install_rc="${PIPESTATUS[0]}"
-          if [ "$install_rc" -ne 0 ]; then
+            2>&1 | tee "$RUNNER_TEMP/chromium-dependencies.log" || dependency_rc="${PIPESTATUS[0]}"
+          if [ "$dependency_rc" -ne 0 ]; then
+            {
+              echo "install_status=failed"
+              echo "failure_kind=dependency_install_failed"
+            } >> "$GITHUB_OUTPUT"
+            exit "$dependency_rc"
+          fi
+
+          install_log="$RUNNER_TEMP/chromium-install.log"
+          resolve_inflight_chromium_change() {
+            local change_id=""
+            change_id="$(timeout --kill-after=5s 30s sudo snap changes --abs-time 2>/dev/null | awk 'NR > 1 && /chromium/ && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
+            if [ -n "$change_id" ]; then
+              echo "Found in-flight Chromium change ${change_id}; waiting for snapd to finish it."
+              if ! timeout --kill-after=5s 120s sudo snap watch "$change_id"; then
+                timeout --kill-after=5s 30s sudo snap change "$change_id" 2>&1 | tee -a "$install_log" || true
+                timeout --kill-after=5s 30s sudo snap abort "$change_id" >/dev/null 2>&1 || true
+              fi
+            fi
+          }
+
+          sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
+          timeout --kill-after=5s 60s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+          : > "$install_log"
+          install_ok=0
+          for attempt in 1 2 3; do
+            echo "Chromium snap install attempt ${attempt}/3"
+            if timeout --kill-after=5s 30s snap list chromium >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            resolve_inflight_chromium_change
+            if timeout --kill-after=5s 30s snap list chromium >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            if timeout --kill-after=5s 180s sudo snap install chromium 2>&1 | tee -a "$install_log"; then
+              install_ok=1
+              break
+            fi
+            resolve_inflight_chromium_change
+            if timeout --kill-after=5s 30s snap list chromium >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            timeout --kill-after=5s 60s sudo snap remove --purge chromium >/dev/null 2>&1 || true
+            sudo systemctl restart snapd.socket snapd.service >/dev/null 2>&1 || true
+            timeout --kill-after=5s 60s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+            sleep 15
+          done
+
+          if [ "$install_ok" -ne 1 ]; then
             failure_kind=package_install_failed
-            if grep -Eqi 'api\.snapcraft\.io|unable to contact snap store|connection refused|timed out|timeout exceeded|Client\.Timeout|HTTP[^0-9]*408' "$RUNNER_TEMP/chromium-install.log"; then
+            if grep -Eqi 'api\.snapcraft\.io|unable to contact snap store|connection refused|timed out|timeout exceeded|Client\.Timeout|HTTP[^0-9]*408' "$install_log"; then
               failure_kind=snap_store_unavailable
             fi
             {
               echo "install_status=failed"
               echo "failure_kind=$failure_kind"
             } >> "$GITHUB_OUTPUT"
-            echo "Chromium installation failed: $failure_kind" >&2
-            exit "$install_rc"
+            exit 1
           fi
 
           CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROMIUM_BIN" ] && [ -x /snap/bin/chromium ]; then
+            CHROMIUM_BIN=/snap/bin/chromium
+          fi
           if [ -n "$CHROMIUM_BIN" ]; then
             {
               echo "install_status=success"
@@ -169,6 +222,9 @@ jobs:
           set -euo pipefail
           CHROMIUM_BIN="${{ steps.install.outputs.chromium_bin }}"
           VERSION="$("$CHROMIUM_BIN" --version 2>&1 | grep -oE '[0-9]+(\\.[0-9]+)+' | head -n1 || true)"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(timeout --kill-after=5s 30s snap list chromium 2>/dev/null | awk 'NR == 2 { print $2 }' || true)"
+          fi
           if [ -z "$VERSION" ]; then
             VERSION="$(dpkg-query -W -f='${Version}' chromium 2>/dev/null | sed 's/-.*//' || true)"
           fi

@@ -138,9 +138,23 @@ jobs:
         timeout-minutes: 25
         run: |
           set -uo pipefail
+          install_log="$RUNNER_TEMP/librepcb-snap-install.log"
+          resolve_inflight_librepcb_change() {
+            local change_id=""
+            change_id="$(timeout --kill-after=5s 30s sudo snap changes --abs-time 2>/dev/null | awk -v package="$SNAP_NAME" 'NR > 1 && index($0, package) && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
+            if [ -n "$change_id" ]; then
+              echo "Found in-flight LibrePCB change ${change_id}; waiting for snapd to finish it."
+              if ! timeout --kill-after=5s 120s sudo snap watch "$change_id"; then
+                timeout --kill-after=5s 30s sudo snap change "$change_id" 2>&1 | tee -a "$install_log" || true
+                timeout --kill-after=5s 30s sudo snap abort "$change_id" >/dev/null 2>&1 || true
+              fi
+            fi
+          }
+
           sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
           timeout --kill-after=5s 60s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
 
+          : > "$install_log"
           install_ok=0
           failure_kind="install_failed"
           for attempt in 1 2 3; do
@@ -150,14 +164,26 @@ jobs:
               break
             fi
 
-            if timeout --kill-after=10s 600s sudo snap install "$SNAP_NAME" 2>&1 | tee /tmp/librepcb-snap-install.log; then
+            resolve_inflight_librepcb_change
+            if timeout --kill-after=5s 30s snap list "$SNAP_NAME" >/dev/null 2>&1; then
               install_ok=1
               break
             fi
 
-            if grep -Eqi 'api\.snapcraft\.io|connection refused|unable to contact snap store|cannot communicate with server' /tmp/librepcb-snap-install.log; then
+            if timeout --kill-after=10s 600s sudo snap install "$SNAP_NAME" 2>&1 | tee -a "$install_log"; then
+              install_ok=1
+              break
+            fi
+
+            resolve_inflight_librepcb_change
+            if timeout --kill-after=5s 30s snap list "$SNAP_NAME" >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            if grep -Eqi 'api\.snapcraft\.io|connection refused|unable to contact snap store|cannot communicate with server|timed out|timeout exceeded|Client\.Timeout|HTTP[^0-9]*408' "$install_log"; then
               failure_kind="snap_store_unavailable"
             fi
+            timeout --kill-after=5s 60s sudo snap remove --purge "$SNAP_NAME" >/dev/null 2>&1 || true
             sudo systemctl restart snapd.socket snapd.service >/dev/null 2>&1 || true
             timeout --kill-after=5s 60s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
             sleep 15
