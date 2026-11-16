@@ -18,6 +18,7 @@ import package_result_policy as result_policy
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/test-multipass.yml"
+EMITTER = ROOT / ".github/actions/emit-package-result/action.yml"
 VERSION = "1.16.4"
 CERT = "/var/snap/multipass/common/data/multipassd/multipass_root_cert.pem"
 CERT_ERROR = f"[error] [client] Caught an unhandled exception: failed to open file '{CERT}': No such file or directory(2)\n"
@@ -44,17 +45,23 @@ class MultipassWorkflowTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for name in ("bash", "date", "cat", "grep"):
+        for name in ("bash", "date", "cat", "grep", "awk", "tee", "sed", "tr"):
             (self.bin / name).symlink_to(shutil.which(name))
         (self.bin / "python3").symlink_to(sys.executable)
         self.workflow = yaml.safe_load(WORKFLOW.read_text())
+        self.emitter = yaml.safe_load(EMITTER.read_text())
         self.job = self.workflow["jobs"]["test-multipass"]
         self.steps = {step["id"]: step for step in self.job["steps"] if "id" in step}
+        self.enforce = next(step for step in self.job["steps"] if step["name"] == "Enforce failure status")
+        self.emit_step = next(step for step in self.emitter["runs"]["steps"] if step["id"] == "emit")
         self.env = dict(PATH=str(self.bin), HOME=str(self.root), TMPDIR=str(self.root),
                         GITHUB_OUTPUT=str(self.root / "output"), PYTHONDONTWRITEBYTECODE="1",
+                        GITHUB_STEP_SUMMARY=str(self.root / "step-summary"),
                         CALLS=str(self.root / "calls"), CERT_CALLS=str(self.root / "cert-calls"),
                         ACTIVE_CALLS=str(self.root / "active-calls"),
-                        ARCH="aarch64", SNAP_RC="0", START_RC="0", ACTIVE_RC="0", CERT_RC="0",
+                        SNAP_INSTALL_CALLS=str(self.root / "snap-install-calls"),
+                        ARCH="aarch64", SNAP_LIST_RC="1", SNAP_RC="9", SNAP_FAILS_BEFORE_SUCCESS="0",
+                        START_RC="0", ACTIVE_RC="0", CERT_RC="0",
                         ACTIVE_READY_AFTER="1", CERT_READY_AFTER="1", TIMEOUT_TARGET="",
                         VERSION_STDOUT=json.dumps({"multipass": VERSION}) + "\n",
                         VERSION_STDERR="", VERSION_RC="0",
@@ -105,6 +112,13 @@ case "$*" in
 esac
 """)
         # PATH contains no real sudo, snap, systemctl, or network tools.
+        self.tool("snap", """
+printf 'snap %s\n' "$*" >> "$CALLS"
+case "$*" in
+  'list multipass') exit "$SNAP_LIST_RC" ;;
+  *) exit 99 ;;
+esac
+""")
         self.tool("sudo", f"""
 printf 'sudo %s\n' "$*" >> "$CALLS"
 case "$*" in
@@ -115,7 +129,19 @@ case "$*" in
     fi
     export MULTIPASS_FIXTURE_PRIVILEGED=1
     exec multipass find --format json ;;
-  'snap install multipass') exit "$SNAP_RC" ;;
+  'systemctl start snapd.socket snapd.service') exit 0 ;;
+  'snap wait system seed.loaded') exit 0 ;;
+  'snap changes --abs-time') exit 0 ;;
+  "snap watch "*|"snap abort "*) exit 0 ;;
+  'snap remove --purge multipass') exit 0 ;;
+  'systemctl restart snapd.socket snapd.service') exit 0 ;;
+  'snap install multipass')
+    COUNT=0
+    if [ -f "$SNAP_INSTALL_CALLS" ]; then read -r COUNT < "$SNAP_INSTALL_CALLS"; fi
+    COUNT=$((COUNT + 1))
+    echo "$COUNT" > "$SNAP_INSTALL_CALLS"
+    if [ "$COUNT" -le "$SNAP_FAILS_BEFORE_SUCCESS" ]; then exit "$SNAP_RC"; fi
+    exit 0 ;;
   'systemctl start snap.multipass.multipassd.service') exit "$START_RC" ;;
   'systemctl is-active --quiet snap.multipass.multipassd.service')
     COUNT=0
@@ -138,7 +164,7 @@ esac
         self.tool("timeout", """
 printf 'timeout %s %s %s\n' "$1" "$2" "$3" >> "$CALLS"
 case "$1:$2:$3" in
-  --kill-after=5s:300s:sudo|--kill-after=5s:30s:sudo|--kill-after=2s:5s:sudo|\
+  --kill-after=5s:240s:sudo|--kill-after=5s:120s:sudo|--kill-after=5s:30s:sudo|--kill-after=2s:5s:sudo|\
   --kill-after=5s:120s:bash|--kill-after=5s:30s:multipass|--kill-after=5s:120s:sudo) ;;
   *) exit 98 ;;
 esac
@@ -146,7 +172,7 @@ shift 2
 if [ "$1" = "$TIMEOUT_TARGET" ]; then exit 124; fi
 exec "$@"
 """)
-        self.tool("sleep", 'test "$*" = 2\necho sleep >> "$CALLS"\n')
+        self.tool("sleep", 'case "$*" in 2|15) ;; *) exit 97 ;; esac\necho "sleep $*" >> "$CALLS"\n')
         self.tool("uname", 'test "$*" = -m\nprintf "%s\\n" "$ARCH"\n')
 
     def tool(self, name, script):
@@ -171,19 +197,39 @@ exec "$@"
         step = self.steps[name]
         output = self.root / "output"
         output.write_text("")
+        (self.root / "step-summary").write_text("")
         (self.root / "calls").write_text("")
-        for counter in ("cert-calls", "active-calls"):
+        for counter in ("cert-calls", "active-calls", "snap-install-calls"):
             (self.root / counter).unlink(missing_ok=True)
-        env = {**self.env,
-               **{key: self.render(str(value)) for key, value in step.get("env", {}).items()},
-               **overrides}
-        result = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", self.render(step["run"])],
+        if name == "summary":
+            action_env = {}
+            for env_name, reference in self.emit_step["env"].items():
+                match = re.fullmatch(r"\$\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}", str(reference))
+                self.assertIsNotNone(match, reference)
+                input_name = match[1]
+                value = step.get("with", {}).get(
+                    input_name, self.emitter["inputs"].get(input_name, {}).get("default", ""))
+                action_env[env_name] = self.render(str(value))
+            script = self.emit_step["run"]
+            step_env = action_env
+        else:
+            script = step["run"]
+            step_env = {key: self.render(str(value)) for key, value in step.get("env", {}).items()}
+        env = {**self.env, **step_env, **overrides}
+        result = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", self.render(script)],
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=15)
         pairs = [line.split("=", 1) for line in output.read_text().splitlines()]
         self.assertTrue(all(len(pair) == 2 for pair in pairs), pairs)
         fields = dict(pairs)
         self.assertEqual(len(pairs), len(fields), "Duplicate output keys")
         return result, fields
+
+    def run_enforce(self, should_fail):
+        self.values["steps.summary.outputs.should_fail"] = str(should_fail)
+        result = subprocess.run(
+            ["/bin/bash", "-e", "-o", "pipefail", "-c", self.render(self.enforce["run"])],
+            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
+        return result
 
     def rejected(self, step, **overrides):
         result, fields = self.run_step(step, **overrides)
@@ -199,12 +245,28 @@ exec "$@"
     def calls(self):
         return (self.root / "calls").read_text()
 
+    def assert_canonical_failure(self, summary):
+        self.assertEqual(
+            ("0", "1", "5", "1", "failure", "failing", "1"),
+            tuple(summary[key] for key in (
+                "passed", "failed", "skipped", "core_failed",
+                "overall_status", "badge_status", "should_fail")),
+        )
+        self.assertEqual(1, self.run_enforce(summary["should_fail"]).returncode)
+        payload = json.loads((self.root / summary["result_path"]).read_text())
+        self.assertEqual({"passed": 0, "failed": 1, "skipped": 5, "core_failed": 1},
+                         {key: payload["tests"][key]
+                          for key in ("passed", "failed", "skipped", "core_failed")})
+        self.assertEqual("failure", payload["run"]["status"])
+
     def test_scope_and_shell_syntax(self):
         self.assertEqual("ubuntu-24.04-arm", self.job["runs-on"])
         self.assertEqual({"contents": "read"}, self.workflow["permissions"])
         self.assertEqual({f"test{i}" for i in range(1, 7)},
                          {name for name in self.steps if re.fullmatch(r"test\d+", name)})
-        self.assertEqual(8, self.steps["install"]["timeout-minutes"])
+        self.assertEqual(15, self.steps["install"]["timeout-minutes"])
+        self.assertTrue(self.steps["install"]["continue-on-error"])
+        self.assertEqual("./.github/actions/emit-package-result", self.steps["summary"]["uses"])
         # runner is available in step env; environment distinguishes hosted from shared runners.
         # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#runner-context
         self.assertEqual("${{ runner.environment }}", self.steps["install"]["env"]["RUNNER_ENVIRONMENT"])
@@ -218,10 +280,11 @@ exec "$@"
     def test_hosted_install_waits_for_both_daemon_and_certificate(self):
         result, fields = self.run_step("install", ACTIVE_READY_AFTER="3", CERT_READY_AFTER="4")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertEqual({"install_status": "success"}, fields)
+        self.assertEqual({"install_status": "success", "failure_kind": "none"}, fields)
         self.assertEqual("6", (self.root / "active-calls").read_text().strip())
         self.assertEqual("4", (self.root / "cert-calls").read_text().strip())
-        self.assertEqual(5, self.calls().splitlines().count("sleep"))
+        self.assertEqual(5, self.calls().splitlines().count("sleep 2"))
+        self.assertEqual(1, self.calls().splitlines().count("sudo snap install multipass"))
         self.assertEqual(1, self.calls().splitlines().count("sudo systemctl start snap.multipass.multipassd.service"))
 
     def test_shared_or_unknown_runner_and_wrong_arch_cannot_mutate_services(self):
@@ -230,11 +293,11 @@ exec "$@"
             with self.subTest(environment=environment, arch=arch):
                 result, fields = self.run_step("install", RUNNER_ENVIRONMENT=environment, ARCH=arch)
                 self.assertNotEqual(0, result.returncode)
-                self.assertEqual("failed", fields["install_status"])
+                self.assertNotIn("install_status", fields)
                 self.assertEqual("", self.calls())
 
     def test_install_or_start_failure_is_not_ready(self):
-        for env in ({"SNAP_RC": "1"}, {"START_RC": "5"}, {"TIMEOUT_TARGET": "sudo"},
+        for env in ({"SNAP_FAILS_BEFORE_SUCCESS": "3"}, {"START_RC": "5"}, {"TIMEOUT_TARGET": "sudo"},
                     {"TIMEOUT_TARGET": "bash"}):
             with self.subTest(env=env):
                 result, fields = self.run_step("install", **env)
@@ -268,6 +331,8 @@ exec "$@"
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(("5", "0", "1", "0", "success", "passing"),
                          tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
+        self.assertEqual("0", summary["should_fail"])
+        self.assertEqual(0, self.run_enforce(summary["should_fail"]).returncode)
         details = [{"name": self.steps[f"test{i}"]["name"], "status": "passed"} for i in range(1, 6)]
         details.append({"name": self.steps["test6"]["name"], **fields})
         self.assertEqual("success", result_policy.validate_six_test_result(
@@ -362,9 +427,8 @@ exec "$@"
         self.assertEqual("baseline_failed", regression["decision"])
         self.record("test6", result, regression)
         result, summary = self.run_step("summary")
-        self.assertNotEqual(0, result.returncode)
-        self.assertEqual(("4", "1", "1", "1", "failure", "failing"),
-                         tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_canonical_failure(summary)
 
     def test_sudo_execution_failure_preserves_exit_and_cannot_pass(self):
         for rc in (1, 127):
@@ -395,9 +459,8 @@ exec "$@"
                     self.assertEqual("baseline_failed", regression["decision"])
                     self.record("test6", result, regression)
                     result, summary = self.run_step("summary")
-                    self.assertNotEqual(0, result.returncode)
-                    self.assertEqual(("4", "1", "1", "1", "failure", "failing"),
-                                     tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assert_canonical_failure(summary)
 
     def test_find_positive_records_allow_empty_aliases_and_remote(self):
         images = {"24.04": IMAGE, "core:core24": {**IMAGE, "aliases": [], "remote": "core"}}
@@ -430,15 +493,23 @@ exec "$@"
                 self.rejected("test4", FIND_STDOUT=json.dumps({"errors": [], "images": {"24.04": IMAGE, "bad": record}}))
         self.rejected("test4", FIND_STDOUT=json.dumps({"errors": [], "images": {" ": IMAGE}}))
 
-    def test_failed_install_prerequisites_emit_core_failures_and_durations(self):
+    def test_failed_install_prerequisites_fail_test1_and_skip_dependent_tests(self):
         original = dict(self.values)
-        for key in ("steps.install.outcome", "steps.install.outputs.install_status"):
-            for state in ("", "failure", "skipped", "cancelled"):
-                self.values = {**original, key: state}
-                for i in range(1, 6):
-                    with self.subTest(key=key, state=state, step=i):
-                        self.rejected(f"test{i}")
-                        self.assertEqual("", self.calls())
+        for state in ("", "failed", "skipped", "cancelled"):
+            self.values = {**original,
+                           "steps.install.outcome": "failure",
+                           "steps.install.outputs.install_status": state}
+            result, fields = self.rejected("test1")
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("failed", fields["status"])
+            self.assertEqual("", self.calls())
+            for i in range(2, 6):
+                with self.subTest(state=state, step=i):
+                    result, fields = self.run_step(f"test{i}")
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual("skipped", fields["status"])
+                    self.assertRegex(fields["duration"], r"^[0-9]+$")
+                    self.assertEqual("", self.calls())
 
     def test_binary_missing_or_wrong_arch_emits_failure_duration(self):
         (self.bin / "multipass").unlink()
@@ -472,9 +543,8 @@ exec "$@"
                     self.assertEqual("baseline_failed", regression["decision"])
                     self.record("test6", result, regression)
                     result, fields = self.run_step("summary")
-                    self.assertNotEqual(0, result.returncode)
-                    self.assertEqual(("4", "1", "1", "1", "failure", "failing"),
-                                     tuple(fields[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assert_canonical_failure(fields)
 
     def test_real_failed_query_propagates_to_summary_and_baseline_decision(self):
         result, fields = self.run_step("test4", FIND_STDOUT="", FIND_STDERR=CERT_ERROR, FIND_RC="7")
@@ -483,13 +553,10 @@ exec "$@"
         self.record("test6", result, regression)
         self.assertEqual("baseline_failed", regression["decision"])
         result, summary = self.run_step("summary")
-        self.assertNotEqual(0, result.returncode)
-        details = [{"name": self.steps[f"test{i}"]["name"],
-                    "status": self.values[f"steps.test{i}.outputs.status"]} for i in range(1, 6)]
-        details.append({"name": self.steps["test6"]["name"], **regression})
-        self.assertEqual("failure", result_policy.validate_six_test_result(
-            details=details, passed=int(summary["passed"]), failed=int(summary["failed"]),
-            skipped=int(summary["skipped"]), core_failed=int(summary["core_failed"]), decision=regression["decision"]))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_canonical_failure(summary)
+        payload = json.loads((self.root / summary["result_path"]).read_text())
+        self.assertEqual("baseline_failed", payload["regression"]["decision"])
 
     def test_failed_readiness_remains_baseline_install_failure(self):
         result, fields = self.run_step("install", CERT_RC="1")
@@ -501,31 +568,39 @@ exec "$@"
         self.record("test6", result, regression)
         self.assertEqual("baseline_install_failed", regression["decision"])
         result, summary = self.run_step("summary")
-        self.assertNotEqual(0, result.returncode)
-        self.assertEqual(("0", "5", "1", "5"), tuple(summary[k] for k in ("passed", "failed", "skipped", "core_failed")))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_canonical_failure(summary)
 
-    def test_snap_install_failure_stops_service_and_fails_all_core_checks(self):
-        result, fields = self.run_step("install", SNAP_RC="9")
-        self.assertEqual(9, result.returncode)
+    def test_snap_install_failure_retries_then_emits_canonical_failure(self):
+        result, fields = self.run_step(
+            "install", SNAP_FAILS_BEFORE_SUCCESS="3", SNAP_RC="9")
+        self.assertEqual(1, result.returncode)
         self.assertEqual("failed", fields["install_status"])
-        self.assertNotIn("systemctl", self.calls())
+        self.assertEqual("install_failed", fields["failure_kind"])
+        self.assertEqual(3, self.calls().splitlines().count("sudo snap install multipass"))
+        self.assertNotIn("systemctl start snap.multipass.multipassd.service", self.calls())
         self.assertNotIn("sudo test", self.calls())
         self.record("install", result, fields)
         result, fields = self.run_step("version")
         self.assertNotEqual(0, result.returncode)
         self.assertNotIn("version", fields)
         self.assertEqual("", self.calls())
-        for i in range(1, 6):
-            result, fields = self.rejected(f"test{i}")
+        result, fields = self.rejected("test1")
+        self.record("test1", result, fields)
+        for i in range(2, 6):
+            result, fields = self.run_step(f"test{i}")
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("skipped", fields["status"])
             self.assertEqual("", self.calls())
             self.record(f"test{i}", result, fields)
         result, regression = self.run_step("test6")
         self.assertEqual("baseline_install_failed", regression["decision"])
         self.record("test6", result, regression)
         result, summary = self.run_step("summary")
-        self.assertNotEqual(0, result.returncode)
-        self.assertEqual(("0", "5", "1", "5", "failure", "failing"),
-                         tuple(summary[key] for key in ("passed", "failed", "skipped", "core_failed", "overall_status", "badge_status")))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("baseline_install_failed",
+                         json.loads((self.root / summary["result_path"]).read_text())["regression"]["decision"])
+        self.assert_canonical_failure(summary)
 
     def test_missing_version_or_wrong_regression_outcomes_fail_closed(self):
         original = dict(self.values)
@@ -536,32 +611,48 @@ exec "$@"
             self.assertEqual("baseline_failed", regression["decision"])
             self.record("test6", result, regression)
             result, fields = self.run_step("summary")
-            self.assertNotEqual(0, result.returncode)
-            self.assertEqual("failing", fields["badge_status"])
-        for key, value in (("outcome", "failure"), ("outcome", ""), ("outcome", "skipped"),
-                           ("outputs.status", "passed"), ("outputs.status", "failed"),
-                           ("outputs.decision", "baseline_failed"), ("outputs.decision", "not_configured")):
-            self.values = {**original, f"steps.test6.{key}": value}
-            result, fields = self.run_step("summary")
-            self.assertNotEqual(0, result.returncode)
-            self.assertEqual(("5", "1", "0", "0"), tuple(fields[k] for k in ("passed", "failed", "skipped", "core_failed")))
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assert_canonical_failure(fields)
 
-    def test_missing_outputs_and_invalid_durations_fail_closed(self):
+        for status, decision in (("failed", "not_applicable_package_manager"),
+                                 ("skipped", "baseline_failed"),
+                                 ("skipped", "baseline_install_failed")):
+            self.values = {**original,
+                           "steps.test6.outputs.status": status,
+                           "steps.test6.outputs.decision": decision}
+            result, fields = self.run_step("summary")
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("1", fields["should_fail"])
+            self.assertEqual(1, self.run_enforce(fields["should_fail"]).returncode)
+            self.assertEqual("failure", fields["overall_status"])
+
+    def test_missing_or_invalid_core_statuses_fail_closed(self):
         original = dict(self.values)
-        for i in range(1, 7):
-            for duration in ("bad", "-1", "1.5", "1000000"):
-                self.values = {**original, f"steps.test{i}.outputs.duration": duration}
+        for i in range(1, 6):
+            for status in ("", "invalid", "cancelled"):
+                self.values = {**original, f"steps.test{i}.outputs.status": status}
                 result, fields = self.run_step("summary")
-                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual("failure", fields["overall_status"])
-        self.values = {**original, "steps.test2.outputs.duration": "08"}
+                self.assertEqual("1", fields["core_failed"])
+                self.assertEqual("1", fields["should_fail"])
+                self.assertEqual(1, self.run_enforce(fields["should_fail"]).returncode)
+
+    def test_invalid_duration_is_normalized_without_changing_health(self):
+        self.values["steps.test2.outputs.duration"] = "bad"
         result, fields = self.run_step("summary")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("21", fields["duration"])
+        self.assertEqual("13", fields["duration"])
+        self.assertEqual(("5", "0", "1", "0", "success", "0"),
+                         tuple(fields[k] for k in (
+                             "passed", "failed", "skipped", "core_failed",
+                             "overall_status", "should_fail")))
+
+    def test_all_missing_outputs_fail_closed(self):
         self.values.clear()
         result, fields = self.run_step("summary")
-        self.assertNotEqual(0, result.returncode)
-        self.assertEqual(("0", "6", "0", "5"), tuple(fields[k] for k in ("passed", "failed", "skipped", "core_failed")))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_canonical_failure(fields)
 
 
 if __name__ == "__main__":
