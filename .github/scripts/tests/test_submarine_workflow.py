@@ -35,6 +35,7 @@ class SubmarineWorkflowTests(unittest.TestCase):
         self.env = dict(os.environ, **self.job["env"])
         self.env.update(
             PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
+            HOME=str(self.root / "home"),
             TMPDIR=str(self.tmp),
             FIXTURE_ROOT=str(self.root),
             BASE_DIR=str(self.root / "current"),
@@ -60,6 +61,11 @@ if attempt >= len(outcomes):
     sys.exit("unexpected extra go invocation")
 code, message = outcomes[attempt]
 print(message, file=sys.stderr if code else sys.stdout)
+if not code and sys.argv[1:2] == ["build"]:
+    output = Path(sys.argv[sys.argv.index("-o") + 1])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("fixture u-root executable\\n")
+    output.chmod(0o755)
 sys.exit(code)
 ''')
         self.shell_stub("git", '''
@@ -73,6 +79,10 @@ printf '%s\\n' "$EXPECTED_COMMIT"
 ''')
         self.shell_stub("sleep", 'printf "%s\\n" "$*" >> "$FIXTURE_ROOT/sleeps"\n')
         self.shell_stub("nproc", "printf '2\\n'\n")
+        self.shell_stub("file", '''
+printf '%s\n' "$*" >> "$FIXTURE_ROOT/file-calls"
+printf '%s\n' "${UROOT_ARCH_DESC:-ELF 64-bit LSB executable, ARM aarch64}"
+''')
         self.shell_stub("timeout", '''
 printf '%s\\n' "$*" >> "$FIXTURE_ROOT/timeouts"
 test "$1" = 30m
@@ -103,7 +113,7 @@ exit "${BUILD_RC:-0}"
         # Execute the actual workflow from gitlink lookup through the one-shot build.
         # Provisioning and unchanged image inspection are outside this focused fixture.
         script = self.steps[step_id]["run"]
-        start = script.index("UROOT_COMMIT=")
+        start = script.index("UROOT_COMMIT=" if step_id == "install" else "UROOT_BIN=")
         if step_id == "install":
             script = script[start:script.index('test -f "${BASE_DIR}/images/', start)]
         else:
@@ -115,7 +125,9 @@ exit "${BUILD_RC:-0}"
         script = script.replace("/tmp/submarine-", str(self.root / "submarine-"))
         directory = self.env["BASE_DIR" if step_id == "install" else "NEXT_DIR"]
         commit = "eadd8c6fee2e915e8f331b1c532be4ac98ba2a05" if step_id == "install" else "a" * 40
-        for name in ("go-calls", "git-calls", "sleeps", "make-calls", "timeouts", "output"):
+        if step_id == "test6":
+            (Path(directory) / "u-root").mkdir(parents=True, exist_ok=True)
+        for name in ("go-calls", "git-calls", "sleeps", "make-calls", "timeouts", "file-calls", "output"):
             (self.root / name).write_text("")
         (self.root / "outcomes").write_text(json.dumps(outcomes))
         result = subprocess.run(
@@ -125,9 +137,21 @@ exit "${BUILD_RC:-0}"
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual([], list(self.tmp.iterdir()), "Setup log should be cleaned up")
-        self.assertEqual([f"-C {directory} rev-parse HEAD:u-root"], self.lines("git-calls"))
+        expected_git_calls = [f"-C {directory} rev-parse HEAD:u-root"] if step_id == "install" else []
+        self.assertEqual(expected_git_calls, self.lines("git-calls"))
         for call in self.lines("go-calls"):
-            self.assertEqual(["install", f"github.com/u-root/u-root@{commit}"], json.loads(call))
+            if step_id == "install":
+                expected = ["install", f"github.com/u-root/u-root@{commit}"]
+            else:
+                expected = [
+                    "build",
+                    "-mod=vendor",
+                    "-trimpath",
+                    "-o",
+                    str(self.root / "home/go/bin/u-root"),
+                    ".",
+                ]
+            self.assertEqual(expected, json.loads(call))
         return result
 
     def lines(self, name):
@@ -233,7 +257,7 @@ go.chmod(0o755)
         helper_start = full_script.index("fail_regression()")
         helper_end = full_script.index("\nunexpected_regression_failure()", helper_start)
         toolchain_start = full_script.index("GO_ARCHIVE=")
-        toolchain_end = full_script.index("UROOT_COMMIT=", toolchain_start)
+        toolchain_end = full_script.index("UROOT_BIN=", toolchain_start)
         script = full_script[helper_start:helper_end] + "\n" + full_script[toolchain_start:toolchain_end]
         for name in ("curl-calls", "sha-calls", "tar-calls", "output"):
             (self.root / name).write_text("")
@@ -267,33 +291,26 @@ go.chmod(0o755)
                 self.assertEqual(1, len(self.lines("make-calls")))
 
     def test_gateway_failure_recovers_with_bounded_backoff(self):
-        for step in ("install", "test6"):
-            for status in (502, 503, 504):
-                for failures in (1, 2):
-                    with self.subTest(step=step, status=status, failures=failures):
-                        message = DOWNLOAD_ERROR.replace("502", str(status))
-                        result = self.run_setup(step, [(1, message)] * failures + [(0, "ready")])
-                        self.assertEqual(0, result.returncode, result.stderr)
-                        self.assertEqual(failures, result.stderr.count(message))
-                        self.assertEqual(failures + 1, len(self.lines("go-calls")))
-                        self.assertEqual(["5", "10"][:failures], self.lines("sleeps"))
-                        self.assertEqual(1, len(self.lines("make-calls")))
+        for status in (502, 503, 504):
+            for failures in (1, 2):
+                with self.subTest(status=status, failures=failures):
+                    message = DOWNLOAD_ERROR.replace("502", str(status))
+                    result = self.run_setup("install", [(1, message)] * failures + [(0, "ready")])
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(failures, result.stderr.count(message))
+                    self.assertEqual(failures + 1, len(self.lines("go-calls")))
+                    self.assertEqual(["5", "10"][:failures], self.lines("sleeps"))
+                    self.assertEqual(1, len(self.lines("make-calls")))
 
     def test_exhaustion_preserves_final_exit_code_and_blocks_build(self):
-        for step in ("install", "test6"):
-            with self.subTest(step=step):
-                result = self.run_setup(step, [(1, DOWNLOAD_ERROR), (2, DOWNLOAD_ERROR), (37, DOWNLOAD_ERROR)])
-                self.assertEqual(37 if step == "install" else 1, result.returncode, result.stderr)
-                self.assertEqual(3, result.stderr.count(DOWNLOAD_ERROR))
-                self.assertEqual(3, len(self.lines("go-calls")))
-                self.assertEqual(["5", "10"], self.lines("sleeps"))
-                self.assertEqual([], self.lines("timeouts"))
-                self.assertEqual([], self.lines("make-calls"))
-                if step == "install":
-                    self.assertEqual([], self.lines("output"))
-                else:
-                    self.assertIn("decision=next_install_failed", self.lines("output"))
-                    self.assertIn("status=failed", self.lines("output"))
+        result = self.run_setup("install", [(1, DOWNLOAD_ERROR), (2, DOWNLOAD_ERROR), (37, DOWNLOAD_ERROR)])
+        self.assertEqual(37, result.returncode, result.stderr)
+        self.assertEqual(3, result.stderr.count(DOWNLOAD_ERROR))
+        self.assertEqual(3, len(self.lines("go-calls")))
+        self.assertEqual(["5", "10"], self.lines("sleeps"))
+        self.assertEqual([], self.lines("timeouts"))
+        self.assertEqual([], self.lines("make-calls"))
+        self.assertEqual([], self.lines("output"))
 
     def test_non_gateway_errors_fail_immediately_with_original_exit_code(self):
         errors = (
@@ -314,27 +331,35 @@ go.chmod(0o755)
                     self.assertEqual([], self.lines("sleeps"))
                     self.assertEqual([], self.lines("make-calls"))
 
+    def test_candidate_local_build_must_produce_native_arm64_binary(self):
+        result = self.run_setup(
+            "test6",
+            [(0, "u-root built from verified vendored checkout")],
+            UROOT_ARCH_DESC="ELF 64-bit LSB executable, x86-64",
+        )
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn("decision=next_install_failed", self.lines("output"))
+        self.assertIn("status=failed", self.lines("output"))
+        self.assertEqual([], self.lines("make-calls"))
+
     def test_old_gateway_log_cannot_retry_a_subsequent_compiler_failure(self):
-        for step in ("install", "test6"):
-            with self.subTest(step=step):
-                result = self.run_setup(step, [(1, DOWNLOAD_ERROR), (19, "undefined: missingSymbol")])
-                self.assertEqual(19 if step == "install" else 1, result.returncode, result.stderr)
-                self.assertEqual(2, len(self.lines("go-calls")))
-                self.assertEqual(["5"], self.lines("sleeps"))
-                self.assertEqual([], self.lines("make-calls"))
+        result = self.run_setup("install", [(1, DOWNLOAD_ERROR), (19, "undefined: missingSymbol")])
+        self.assertEqual(19, result.returncode, result.stderr)
+        self.assertEqual(2, len(self.lines("go-calls")))
+        self.assertEqual(["5"], self.lines("sleeps"))
+        self.assertEqual([], self.lines("make-calls"))
 
     def test_gitlink_lookup_failure_is_not_retried_or_ignored(self):
-        for step in ("install", "test6"):
-            with self.subTest(step=step):
-                result = self.run_setup(step, [], GIT_RC="41")
-                self.assertEqual(41, result.returncode, result.stderr)
-                self.assertEqual([], self.lines("go-calls"))
-                self.assertEqual([], self.lines("sleeps"))
-                self.assertEqual([], self.lines("make-calls"))
+        result = self.run_setup("install", [], GIT_RC="41")
+        self.assertEqual(41, result.returncode, result.stderr)
+        self.assertEqual([], self.lines("go-calls"))
+        self.assertEqual([], self.lines("sleeps"))
+        self.assertEqual([], self.lines("make-calls"))
 
     def test_image_build_failure_is_not_retried_even_for_a_network_error(self):
         for step in ("install", "test6"):
-            for setup in ([(0, "ready")], [(1, DOWNLOAD_ERROR), (0, "ready")]):
+            setups = ([(0, "ready")], [(1, DOWNLOAD_ERROR), (0, "ready")]) if step == "install" else ([(0, "ready")],)
+            for setup in setups:
                 with self.subTest(step=step, setup=setup):
                     result = self.run_setup(step, setup, BUILD_RC="29", BUILD_MESSAGE=DOWNLOAD_ERROR)
                     self.assertEqual(1, result.returncode, result.stderr)
@@ -429,7 +454,14 @@ go.chmod(0o755)
                     '[ "${ACTUAL_SUBMODULE_COMMIT}" != "${EXPECTED_SUBMODULE_COMMIT}" ]',
                     script,
                 )
-            self.assertEqual(1, script.count("go install "))
+            if step == "install":
+                self.assertEqual(1, script.count("go install "))
+                self.assertNotIn("go build -mod=vendor", script)
+            else:
+                self.assertNotIn("go install ", script)
+                self.assertEqual(1, script.count("go build -mod=vendor"))
+                self.assertIn('cd "${NEXT_DIR}/u-root"', script)
+                self.assertIn('file "${UROOT_BIN}"', script)
             self.assertEqual(1, script.count("timeout 30m bash -lc"))
         for number in range(1, 6):
             self.assertNotRegex(self.steps[f"test{number}"]["run"], r"(?i)retry|ATTEMPT|sleep ")
