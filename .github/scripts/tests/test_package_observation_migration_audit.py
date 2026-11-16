@@ -135,7 +135,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
              'core_failed': 381,
              'passed': 6,
              'failed': 6,
-             'skipped': 698,
+             'skipped': 697,
              'duration': 9},
             {
                 key: len(value)
@@ -257,7 +257,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            '9cb538c0ec520774062742d044c01602ed423f3664774f08400de4aba9ce60de',
+            'd8ee92149e97ffd7b73b76f4f30707fcae016b1b381d7b37bc26328b9f4c77ce',
             digest,
         )
 
