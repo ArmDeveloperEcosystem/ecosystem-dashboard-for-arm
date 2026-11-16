@@ -97,6 +97,9 @@ test "$1" = -C
 test "$2" = "$EXPECTED_DIR"
 test "$3" = -j2
 test "$4" = arm64
+if [ "${REQUIRE_GOROOT:-0}" = 1 ]; then
+  test "${GOROOT:-}" = "$EXPECTED_GOROOT"
+fi
 printf '%s\\n' "${BUILD_MESSAGE:-fixture image build}"
 exit "${BUILD_RC:-0}"
 ''')
@@ -113,7 +116,7 @@ exit "${BUILD_RC:-0}"
         # Execute the actual workflow from gitlink lookup through the one-shot build.
         # Provisioning and unchanged image inspection are outside this focused fixture.
         script = self.steps[step_id]["run"]
-        start = script.index("UROOT_COMMIT=" if step_id == "install" else "UROOT_BIN=")
+        start = script.index("UROOT_COMMIT=" if step_id == "install" else "export GOROOT=")
         if step_id == "install":
             script = script[start:script.index('test -f "${BASE_DIR}/images/', start)]
         else:
@@ -133,7 +136,15 @@ exit "${BUILD_RC:-0}"
         result = subprocess.run(
             ["/bin/bash", "-e", "-u", "-o", "pipefail", "-c", script],
             cwd=self.root,
-            env=dict(self.env, EXPECTED_DIR=directory, EXPECTED_COMMIT=commit, **env),
+            env=dict(
+                self.env,
+                EXPECTED_DIR=directory,
+                EXPECTED_COMMIT=commit,
+                EXPECTED_GOROOT=str(self.root / "go1.26.6"),
+                GO_ROOT=str(self.root / "go1.26.6"),
+                REQUIRE_GOROOT="1" if step_id == "test6" else "0",
+                **env,
+            ),
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual([], list(self.tmp.iterdir()), "Setup log should be cleaned up")
@@ -257,7 +268,7 @@ go.chmod(0o755)
         helper_start = full_script.index("fail_regression()")
         helper_end = full_script.index("\nunexpected_regression_failure()", helper_start)
         toolchain_start = full_script.index("GO_ARCHIVE=")
-        toolchain_end = full_script.index("UROOT_BIN=", toolchain_start)
+        toolchain_end = full_script.index("export GOROOT=", toolchain_start)
         script = full_script[helper_start:helper_end] + "\n" + full_script[toolchain_start:toolchain_end]
         for name in ("curl-calls", "sha-calls", "tar-calls", "output"):
             (self.root / name).write_text("")
@@ -475,6 +486,8 @@ go.chmod(0o755)
             candidate,
         )
         self.assertIn("export GOTOOLCHAIN=local", candidate)
+        self.assertIn('export GOROOT="${GO_ROOT}"', candidate)
+        self.assertIn('export PATH="${GOROOT}/bin:${PATH}"', candidate)
 
     def test_candidate_toolchain_is_pinned_verified_and_fail_closed(self):
         result, output = self.run_candidate_toolchain()
