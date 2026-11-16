@@ -23,25 +23,26 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             {'batches': 22,
              'packages': 966,
-             'custom_summary_workflows': 930,
-             'emitter_workflows': 36,
+             'custom_summary_workflows': 925,
+             'emitter_workflows': 41,
              'shared_smoke_workflows': 13,
              'package_manager_workflows': 428},
             self.report["totals"],
         )
         self.assertEqual(
             {'baseline_failed': 7,
+             'baseline_install_failed': 2,
              'next_install_failed': 1,
              'next_regression_failed': 5,
-             'not_applicable_package_manager': 8,
-             'not_configured': 945},
+             'not_applicable_package_manager': 7,
+             'not_configured': 944},
             self.report["fallback_counts"],
         )
         self.assertEqual(
             {'shared_smoke': 13,
-             'emitter_only': 23,
+             'emitter_only': 28,
              'generic_source': 90,
-             'fully_custom': 840},
+             'fully_custom': 835},
             {
                 key: len(value)
                 for key, value in self.report["migration_cohorts"].items()
@@ -121,7 +122,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         # Chef, Garden Linux and BenchmarkSQL bind through step env, outside this
         # advisory scan's literal run-script reference analysis.
         self.assertEqual(
-            {"test1": 8, "test2": 8, "test3": 9, "test4": 9, "test5": 10, "test6": 327},
+            {"test1": 8, "test2": 8, "test3": 9, "test4": 9, "test5": 10, "test6": 324},
             {
                 key: len(value)
                 for key, value in remediation[
@@ -132,10 +133,10 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(
             {'overall_status': 6,
              'badge_status': 6,
-             'core_failed': 381,
+             'core_failed': 378,
              'passed': 6,
              'failed': 6,
-             'skipped': 697,
+             'skipped': 694,
              'duration': 9},
             {
                 key: len(value)
@@ -143,11 +144,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            398,
+            394,
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
-        self.assertEqual(76, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(279, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(75, len(remediation["package_manager_non_skipped_status"]))
+        self.assertEqual(278, len(remediation["literal_pair_contradictions"]))
         self.assertNotIn(
             "repeatmasker",
             [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
@@ -157,11 +158,11 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertEqual(31, len(remediation["no_literal_decision"]))
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
-            304, len(remediation["package_manager_summary_omits_test6"])
+            301, len(remediation["package_manager_summary_omits_test6"])
         )
         # The audit flags every default except not_configured, including Chef's
         # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
-        self.assertEqual(21, len(remediation["unsafe_fallback_workflows"]))
+        self.assertEqual(22, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
         self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
@@ -187,7 +188,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             90, len(remediation["generic_source_missing_baseline_facts"])
         )
         self.assertEqual(
-            406, len(remediation["package_manager_missing_baseline_guard"])
+            402, len(remediation["package_manager_missing_baseline_guard"])
         )
         self.assertEqual(
             966, len(remediation["missing_package_observation_output"])
@@ -213,7 +214,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertIn(
             "xen-hypervisor", remediation["non_package_manager_missing_baseline_guard"]
         )
-        self.assertEqual(328, len(remediation["summary_omits_test6_status"]))
+        self.assertEqual(325, len(remediation["summary_omits_test6_status"]))
         self.assertIn("garden-linux", remediation["summary_omits_test6_status"])
         self.assertEqual(
             954, len(remediation["unsafe_package_version_fallback"])
@@ -257,7 +258,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            'd8ee92149e97ffd7b73b76f4f30707fcae016b1b381d7b37bc26328b9f4c77ce',
+            '96b4e6e011af1dac16cae49cc499569ff457dfe56aab1c97360df6a42488f7cf',
             digest,
         )
 
