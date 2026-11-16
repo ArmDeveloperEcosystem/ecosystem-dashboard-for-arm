@@ -221,6 +221,87 @@ class SnapInstallRetryContractTests(unittest.TestCase):
                     f"{package} does not publish its install status",
                 )
 
+    def test_snapcraft_timeout_budget_allows_bounded_retry_lifecycle(self):
+        workflow_text = self.workflows["snapcraft"]
+        job_timeout = re.search(
+            r"^  test-snapcraft:\n(?:.*\n)*?    timeout-minutes:\s*(\d+)\s*$",
+            workflow_text,
+            re.MULTILINE,
+        )
+        install_timeout = re.search(
+            r"^\s+timeout-minutes:\s*(\d+)\s*$",
+            self.steps["snapcraft"]["install"]["text"],
+            re.MULTILINE,
+        )
+
+        self.assertIsNotNone(job_timeout)
+        self.assertIsNotNone(install_timeout)
+
+        # Each attempt can consume 930 seconds when every bounded command
+        # reaches its timeout and kill-after grace period. Bootstrap can consume
+        # another 100 seconds; retain five minutes for shell and runner overhead.
+        required_install_seconds = (3 * 930) + 100 + 300
+        self.assertGreaterEqual(
+            int(install_timeout.group(1)) * 60,
+            required_install_seconds,
+            "Snapcraft's step timeout cannot cover its declared retry lifecycle",
+        )
+        self.assertGreaterEqual(
+            int(job_timeout.group(1)),
+            int(install_timeout.group(1)) + 15,
+            "The job must leave fifteen minutes for Tests 1-6 and result emission",
+        )
+
+    def test_install_systemctl_operations_are_timeout_bounded(self):
+        for package, steps in self.steps.items():
+            with self.subTest(package=package):
+                unbounded = []
+                for line_number, line in enumerate(
+                    steps["install"]["text"].splitlines(),
+                    start=1,
+                ):
+                    if "systemctl" in line and not re.search(
+                        r"\btimeout\b.*\bsystemctl\b", line
+                    ):
+                        unbounded.append(f"line {line_number}: {line.strip()}")
+                self.assertEqual(
+                    [],
+                    unbounded,
+                    f"{package} has unbounded systemctl operations: {unbounded}",
+                )
+
+    def test_lxd_architecture_check_resolves_the_snap_mount(self):
+        architecture_text = self.steps["lxd"]["test4"]["text"]
+        self.assertRegex(
+            architecture_text,
+            r'SNAP_MOUNT="\$\(readlink -f /snap/lxd/current\)"',
+        )
+        self.assertRegex(
+            architecture_text,
+            r'find "\$SNAP_MOUNT"',
+        )
+        self.assertNotRegex(
+            architecture_text,
+            r"find\s+/snap/lxd/current",
+            "find does not descend through the current-revision symlink by default",
+        )
+
+    def test_multipass_architecture_check_resolves_the_snap_mount(self):
+        architecture_text = self.steps["multipass"]["test5"]["text"]
+        self.assertRegex(
+            architecture_text,
+            r'SNAP_MOUNT="\$\(readlink -f /snap/multipass/current\)"',
+        )
+        self.assertRegex(
+            architecture_text,
+            r'find "\$SNAP_MOUNT"',
+        )
+        self.assertNotRegex(
+            architecture_text,
+            r"find\s+/snap/multipass/current",
+            "find does not descend through the current-revision symlink by default",
+        )
+
     def test_tests_one_through_five_do_not_continue_on_error(self):
         for package, steps in self.steps.items():
             for test_number in range(1, 6):

@@ -46,6 +46,8 @@ class MultipassWorkflowTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        self.snap_mount = self.root / "multipass-snap"
+        self.snap_mount.mkdir()
         for name in ("bash", "date", "cat", "grep", "awk", "tee", "sed", "sort", "tr"):
             (self.bin / name).symlink_to(shutil.which(name))
         (self.bin / "python3").symlink_to(sys.executable)
@@ -70,7 +72,8 @@ class MultipassWorkflowTests(unittest.TestCase):
                         BANNER_STDERR="", BANNER_RC="0", HELP_STDOUT=HELP, HELP_STDERR="", HELP_RC="0",
                         FIND_STDOUT=FIND, FIND_STDERR="", FIND_RC="0", SOCKET_ERROR=SOCKET_ERROR,
                         SUDO_FIND_RC="0", PAYLOAD_PRESENT="1", PAYLOAD_MACHINE="AArch64",
-                        PAYLOAD_PATH=str(self.root / "multipass-payload"))
+                        PAYLOAD_PATH=str(self.root / "multipass-payload"),
+                        SNAP_MOUNT_PATH=str(self.snap_mount))
         (self.root / "multipass-payload").write_text("fixture payload\n")
         (self.root / "multipass-payload").chmod(0o755)
         self.values = {
@@ -178,9 +181,14 @@ exec "$@"
 """)
         self.tool("sleep", 'case "$*" in 2|15) ;; *) exit 97 ;; esac\necho "sleep $*" >> "$CALLS"\n')
         self.tool("uname", 'test "$*" = -m\nprintf "%s\\n" "$ARCH"\n')
+        self.tool("readlink", """
+printf 'readlink %s\n' "$*" >> "$CALLS"
+test "$*" = '-f /snap/multipass/current'
+printf '%s\n' "$SNAP_MOUNT_PATH"
+""")
         self.tool("find", """
 printf 'find %s\n' "$*" >> "$CALLS"
-test "$*" = '/snap/multipass/current -type f -name multipass -perm /111 -print'
+test "$*" = "$SNAP_MOUNT_PATH -type f -name multipass -perm /111 -print"
 if [ "$PAYLOAD_PRESENT" = 1 ]; then printf '%s\n' "$PAYLOAD_PATH"; fi
 """)
         self.tool("readelf", """
@@ -585,7 +593,8 @@ printf '  Machine:                           %s\n' "$PAYLOAD_MACHINE"
         result, fields = self.run_step("test5")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual("passed", fields["status"])
-        self.assertIn("find /snap/multipass/current", self.calls())
+        self.assertIn("readlink -f /snap/multipass/current", self.calls())
+        self.assertIn(f"find {self.snap_mount}", self.calls())
         self.assertIn(f"readelf -h {self.env['PAYLOAD_PATH']}", self.calls())
         result, _ = self.rejected("test5", PAYLOAD_PRESENT="0")
         self.assertNotIn("readelf -h", self.calls())
