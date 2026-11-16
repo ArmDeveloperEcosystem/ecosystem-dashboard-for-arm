@@ -40,7 +40,7 @@ class SubmarineWorkflowTests(unittest.TestCase):
             BASE_DIR=str(self.root / "current"),
             NEXT_DIR=str(self.root / "regression"),
             CURRENT="0.4.0",
-            LATEST="0.4.1",
+            LATEST="0.5.1",
             START_TIME="0",
             GITHUB_OUTPUT=str(self.root / "output"),
         )
@@ -103,8 +103,15 @@ exit "${BUILD_RC:-0}"
         # Execute the actual workflow from gitlink lookup through the one-shot build.
         # Provisioning and unchanged image inspection are outside this focused fixture.
         script = self.steps[step_id]["run"]
-        end = 'test -f "${BASE_DIR}/images/' if step_id == "install" else "NEXT_VERSION="
-        script = script[script.index("UROOT_COMMIT="):script.index(end)]
+        start = script.index("UROOT_COMMIT=")
+        if step_id == "install":
+            script = script[start:script.index('test -f "${BASE_DIR}/images/', start)]
+        else:
+            helper_start = script.index("fail_regression()")
+            helper_end = script.index("\nunexpected_regression_failure()", helper_start)
+            helper = script[helper_start:helper_end]
+            body_end = script.index("\nif ! NEXT_VERSION=", start)
+            script = helper + "\n" + script[start:body_end]
         script = script.replace("/tmp/submarine-", str(self.root / "submarine-"))
         directory = self.env["BASE_DIR" if step_id == "install" else "NEXT_DIR"]
         commit = "eadd8c6fee2e915e8f331b1c532be4ac98ba2a05" if step_id == "install" else "a" * 40
@@ -125,6 +132,59 @@ exit "${BUILD_RC:-0}"
 
     def lines(self, name):
         return (self.root / name).read_text().splitlines()
+
+    def run_candidate_source_preflight(self, scenario):
+        self.shell_stub("git", r'''
+printf '%s\n' "$*" >> "$FIXTURE_ROOT/git-calls"
+scenario="${GIT_SCENARIO:-success}"
+if [ "$1" = clone ]; then
+    target="${!#}"
+    mkdir -p "$target/u-root" "$target/kernel"
+    exit 0
+fi
+if [ "$1" = config ] && [ "$2" = --global ]; then
+    exit 0
+fi
+test "$1" = -C
+directory="$2"
+shift 2
+if [ "$directory" = "$NEXT_DIR" ] && [ "$1" = rev-parse ] && [ "$2" = HEAD ]; then
+    if [ "$scenario" = parent-mismatch ]; then printf '%040d\n' 9; else printf '%s\n' "$SUBMARINE_NEXT_SOURCE_COMMIT"; fi
+elif [ "$directory" = "$NEXT_DIR" ] && [ "$1" = config ] && [ "$2" = -f ]; then
+    if [ "$scenario" = bad-upstream ]; then printf '%s\n' 'https://example.invalid/linux.git'; else printf '%s\n' "$SUBMARINE_KERNEL_UPSTREAM"; fi
+elif [ "$directory" = "$NEXT_DIR" ] && [ "$1" = config ] && [ "$2" = submodule.kernel.url ]; then
+    test "$3" = "$SUBMARINE_KERNEL_MIRROR"
+elif [ "$directory" = "$NEXT_DIR" ] && [ "$1" = submodule ] && [ "$2" = update ]; then
+    [ "$scenario" != submodule-fetch-fail ]
+elif [ "$directory" = "$NEXT_DIR" ] && [ "$1" = rev-parse ] && [ "$2" = HEAD:u-root ]; then
+    printf '1111111111111111111111111111111111111111\n'
+elif [ "$directory" = "$NEXT_DIR" ] && [ "$1" = rev-parse ] && [ "$2" = HEAD:kernel ]; then
+    printf '2222222222222222222222222222222222222222\n'
+elif [ "$directory" = "$NEXT_DIR/u-root" ] && [ "$1" = rev-parse ] && [ "$2" = HEAD ]; then
+    if [ "$scenario" = submodule-mismatch ]; then printf '%040d\n' 8; else printf '1111111111111111111111111111111111111111\n'; fi
+elif [ "$directory" = "$NEXT_DIR/kernel" ] && [ "$1" = rev-parse ] && [ "$2" = HEAD ]; then
+    printf '2222222222222222222222222222222222222222\n'
+else
+    exit 91
+fi
+''')
+        full_script = self.steps["test6"]["run"]
+        helper_start = full_script.index("fail_regression()")
+        helper_end = full_script.index("\nunexpected_regression_failure()", helper_start)
+        source_start = full_script.index('rm -rf "${NEXT_DIR}"')
+        source_end = full_script.index("UROOT_COMMIT=", source_start)
+        script = full_script[helper_start:helper_end] + "\n" + full_script[source_start:source_end]
+        for name in ("git-calls", "output"):
+            (self.root / name).write_text("")
+        result = subprocess.run(
+            ["/bin/bash", "-e", "-u", "-o", "pipefail", "-c", script],
+            cwd=self.root,
+            env=dict(self.env, GIT_SCENARIO=scenario),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result, self.lines("output"), self.lines("git-calls")
 
     def test_success_does_not_retry_or_sleep(self):
         for step in ("install", "test6"):
@@ -153,13 +213,17 @@ exit "${BUILD_RC:-0}"
         for step in ("install", "test6"):
             with self.subTest(step=step):
                 result = self.run_setup(step, [(1, DOWNLOAD_ERROR), (2, DOWNLOAD_ERROR), (37, DOWNLOAD_ERROR)])
-                self.assertEqual(37, result.returncode, result.stderr)
+                self.assertEqual(37 if step == "install" else 1, result.returncode, result.stderr)
                 self.assertEqual(3, result.stderr.count(DOWNLOAD_ERROR))
                 self.assertEqual(3, len(self.lines("go-calls")))
                 self.assertEqual(["5", "10"], self.lines("sleeps"))
                 self.assertEqual([], self.lines("timeouts"))
                 self.assertEqual([], self.lines("make-calls"))
-                self.assertEqual([], self.lines("output"))
+                if step == "install":
+                    self.assertEqual([], self.lines("output"))
+                else:
+                    self.assertIn("decision=next_install_failed", self.lines("output"))
+                    self.assertIn("status=failed", self.lines("output"))
 
     def test_non_gateway_errors_fail_immediately_with_original_exit_code(self):
         errors = (
@@ -174,7 +238,7 @@ exit "${BUILD_RC:-0}"
             for message in errors:
                 with self.subTest(step=step, message=message):
                     result = self.run_setup(step, [(23, message)])
-                    self.assertEqual(23, result.returncode, result.stderr)
+                    self.assertEqual(23 if step == "install" else 1, result.returncode, result.stderr)
                     self.assertIn(message, result.stderr)
                     self.assertEqual(1, len(self.lines("go-calls")))
                     self.assertEqual([], self.lines("sleeps"))
@@ -184,7 +248,7 @@ exit "${BUILD_RC:-0}"
         for step in ("install", "test6"):
             with self.subTest(step=step):
                 result = self.run_setup(step, [(1, DOWNLOAD_ERROR), (19, "undefined: missingSymbol")])
-                self.assertEqual(19, result.returncode, result.stderr)
+                self.assertEqual(19 if step == "install" else 1, result.returncode, result.stderr)
                 self.assertEqual(2, len(self.lines("go-calls")))
                 self.assertEqual(["5"], self.lines("sleeps"))
                 self.assertEqual([], self.lines("make-calls"))
@@ -215,8 +279,24 @@ exit "${BUILD_RC:-0}"
 
     def test_pins_source_and_test_scope_are_preserved(self):
         self.assertEqual("0.4.0", self.job["env"]["SUBMARINE_VERSION"])
-        self.assertEqual("0.4.1", self.job["env"]["SUBMARINE_NEXT_VERSION"])
+        self.assertEqual(
+            "8e53f27f9f4b41ba4ea960ad7b8d3781eae6cb8d",
+            self.job["env"]["SUBMARINE_SOURCE_COMMIT"],
+        )
+        self.assertEqual("0.5.1", self.job["env"]["SUBMARINE_NEXT_VERSION"])
+        self.assertEqual(
+            "a2e60395030115263af276eabd6f8da0a21a84a9",
+            self.job["env"]["SUBMARINE_NEXT_SOURCE_COMMIT"],
+        )
         self.assertEqual("https://github.com/FyraLabs/submarine.git", self.job["env"]["SUBMARINE_REPO"])
+        self.assertEqual(
+            "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+            self.job["env"]["SUBMARINE_KERNEL_UPSTREAM"],
+        )
+        self.assertEqual(
+            "https://github.com/gregkh/linux.git",
+            self.job["env"]["SUBMARINE_KERNEL_MIRROR"],
+        )
         self.assertEqual("ubuntu-24.04-arm", self.job["runs-on"])
         self.assertEqual(
             "registry.fedoraproject.org/fedora-minimal@sha256:"
@@ -225,13 +305,100 @@ exit "${BUILD_RC:-0}"
         )
         for step, version, directory in (("install", "SUBMARINE_VERSION", "BASE_DIR"), ("test6", "LATEST", "NEXT_DIR")):
             script = self.steps[step]["run"]
-            self.assertIn(f'git clone --depth 1 --branch "v${{{version}}}" --recurse-submodules "${{SUBMARINE_REPO}}" "${{{directory}}}"', script)
+            self.assertIn(
+                f'git clone --depth 1 --branch "v${{{version}}}" '
+                f'"${{SUBMARINE_REPO}}" "${{{directory}}}"',
+                script,
+            )
+            self.assertNotIn("--recurse-submodules", script)
+            source_commit = (
+                "SUBMARINE_SOURCE_COMMIT" if step == "install" else "SUBMARINE_NEXT_SOURCE_COMMIT"
+            )
+            self.assertIn(source_commit, script)
+            self.assertIn(
+                f'git -C "${{{directory}}}" config -f .gitmodules '
+                "--get submodule.kernel.url",
+                script,
+            )
+            self.assertIn(
+                f'git -C "${{{directory}}}" config submodule.kernel.url '
+                '"${SUBMARINE_KERNEL_MIRROR}"',
+                script,
+            )
+            self.assertIn(
+                f'git -C "${{{directory}}}" submodule update --init --depth 1 '
+                "--jobs 2 u-root kernel",
+                script,
+            )
+            self.assertIn(
+                f'EXPECTED_SUBMODULE_COMMIT=$(git -C "${{{directory}}}" '
+                'rev-parse "HEAD:${SUBMODULE}")',
+                script,
+            )
+            self.assertIn(
+                f'ACTUAL_SUBMODULE_COMMIT=$(git -C "${{{directory}}}/${{SUBMODULE}}" '
+                "rev-parse HEAD)",
+                script,
+            )
+            if step == "install":
+                self.assertIn(
+                    'test "${ACTUAL_SUBMODULE_COMMIT}" = "${EXPECTED_SUBMODULE_COMMIT}"',
+                    script,
+                )
+            else:
+                self.assertIn(
+                    '[ "${ACTUAL_SUBMODULE_COMMIT}" != "${EXPECTED_SUBMODULE_COMMIT}" ]',
+                    script,
+                )
             self.assertEqual(1, script.count("go install "))
             self.assertEqual(1, script.count("timeout 30m bash -lc"))
         for number in range(1, 6):
             self.assertNotRegex(self.steps[f"test{number}"]["run"], r"(?i)retry|ATTEMPT|sleep ")
         self.assertNotRegex(WORKFLOW.read_text(), r"GOPROXY|GOSUMDB|GONOSUMDB|insecure")
 
+    def test_regression_failures_emit_policy_approved_outputs(self):
+        script = self.steps["test6"]["run"]
+        for decision in (
+            "next_download_failed",
+            "next_source_preflight_failed",
+            "next_install_failed",
+            "next_artifact_validation_failed",
+        ):
+            self.assertIn(f'"{decision}"', script)
+        self.assertIn("fail_regression()", script)
+        self.assertIn("trap unexpected_regression_failure ERR", script)
+        self.assertIn('echo "status=failed"', script)
+        self.assertIn('echo "duration=$((end_time - START_TIME))"', script)
+
+    def test_candidate_source_preflight_executes_mirror_and_gitlink_guards(self):
+        result, output, calls = self.run_candidate_source_preflight("success")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], output)
+        self.assertTrue(any("submodule update --init --depth 1 --jobs 2 u-root kernel" in call for call in calls))
+
+        for scenario, decision in (
+            ("parent-mismatch", "next_source_preflight_failed"),
+            ("bad-upstream", "next_source_preflight_failed"),
+            ("submodule-fetch-fail", "next_download_failed"),
+            ("submodule-mismatch", "next_source_preflight_failed"),
+        ):
+            with self.subTest(scenario=scenario):
+                result, output, calls = self.run_candidate_source_preflight(scenario)
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn(f"decision={decision}", output)
+                self.assertIn("status=failed", output)
+                if scenario in {"parent-mismatch", "bad-upstream"}:
+                    self.assertFalse(any("submodule update" in call for call in calls))
+
+    def test_summary_counts_skipped_regression_separately(self):
+        script = self.steps["summary"]["run"]
+        self.assertIn("SKIPPED=0", script)
+        self.assertIn("skipped) SKIPPED=$((SKIPPED + 1))", script)
+        self.assertIn('echo "skipped=${SKIPPED}"', script)
+        self.assertNotIn(
+            'if [ "${{ steps.test6.outputs.status || \'failed\' }}" = "passed" ]',
+            script,
+        )
     def test_candidate_failure_cannot_leave_the_summary_green(self):
         for candidate in ("passed", "failed", "", "skipped"):
             with self.subTest(candidate=candidate):
@@ -252,13 +419,14 @@ exit "${BUILD_RC:-0}"
                     cwd=self.root, env=self.env, capture_output=True, text=True, timeout=10,
                 )
                 values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-                passed = candidate == "passed"
-                self.assertEqual(0 if passed else 1, result.returncode, result.stderr)
-                self.assertEqual("6" if passed else "5", values["passed"])
-                self.assertEqual("0" if passed else "1", values["failed"])
+                non_failing = candidate in {"passed", "skipped"}
+                self.assertEqual(0 if non_failing else 1, result.returncode, result.stderr)
+                self.assertEqual("6" if candidate == "passed" else "5", values["passed"])
+                self.assertEqual("0" if non_failing else "1", values["failed"])
+                self.assertEqual("1" if candidate == "skipped" else "0", values["skipped"])
                 self.assertEqual("0", values["core_failed"])
-                self.assertEqual("success" if passed else "failure", values["overall_status"])
-                self.assertEqual("passing" if passed else "failing", values["badge_status"])
+                self.assertEqual("success" if non_failing else "failure", values["overall_status"])
+                self.assertEqual("passing" if non_failing else "failing", values["badge_status"])
 
     def test_shell_steps_parse(self):
         for step in self.job["steps"]:

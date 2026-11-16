@@ -84,8 +84,12 @@ jobs:
       image: registry.fedoraproject.org/fedora-minimal@sha256:c8f378f1927145aa7cf5c4c5044ba13fbfc0725aa61b626eb05caa73eea9b86a # original: registry.fedoraproject.org/fedora-minimal:41
     env:
       SUBMARINE_VERSION: "0.4.0"
-      SUBMARINE_NEXT_VERSION: "0.4.1"
+      SUBMARINE_SOURCE_COMMIT: "8e53f27f9f4b41ba4ea960ad7b8d3781eae6cb8d"
+      SUBMARINE_NEXT_VERSION: "0.5.1"
+      SUBMARINE_NEXT_SOURCE_COMMIT: "a2e60395030115263af276eabd6f8da0a21a84a9"
       SUBMARINE_REPO: "https://github.com/FyraLabs/submarine.git"
+      SUBMARINE_KERNEL_UPSTREAM: "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
+      SUBMARINE_KERNEL_MIRROR: "https://github.com/gregkh/linux.git"
       SUBMARINE_WORKROOT: "/tmp/submarine-smoke"
       SUBMARINE_VENV: "/tmp/submarine-smoke/venv"
 
@@ -155,8 +159,17 @@ jobs:
           "${SUBMARINE_VENV}/bin/pip" install "setuptools<81" depthcharge-tools
           echo "${SUBMARINE_VENV}/bin" >> "$GITHUB_PATH"
           export PATH="${SUBMARINE_VENV}/bin:/usr/sbin:/sbin:/usr/bin:/bin:$PATH:$HOME/go/bin"
-          git clone --depth 1 --branch "v${SUBMARINE_VERSION}" --recurse-submodules "${SUBMARINE_REPO}" "${BASE_DIR}"
+          git clone --depth 1 --branch "v${SUBMARINE_VERSION}" "${SUBMARINE_REPO}" "${BASE_DIR}"
           git config --global --add safe.directory "${BASE_DIR}"
+          test "$(git -C "${BASE_DIR}" rev-parse HEAD)" = "${SUBMARINE_SOURCE_COMMIT}"
+          test "$(git -C "${BASE_DIR}" config -f .gitmodules --get submodule.kernel.url)" = "${SUBMARINE_KERNEL_UPSTREAM}"
+          git -C "${BASE_DIR}" config submodule.kernel.url "${SUBMARINE_KERNEL_MIRROR}"
+          git -C "${BASE_DIR}" submodule update --init --depth 1 --jobs 2 u-root kernel
+          for SUBMODULE in u-root kernel; do
+            EXPECTED_SUBMODULE_COMMIT=$(git -C "${BASE_DIR}" rev-parse "HEAD:${SUBMODULE}")
+            ACTUAL_SUBMODULE_COMMIT=$(git -C "${BASE_DIR}/${SUBMODULE}" rev-parse HEAD)
+            test "${ACTUAL_SUBMODULE_COMMIT}" = "${EXPECTED_SUBMODULE_COMMIT}"
+          done
 
           UROOT_COMMIT=$(git -C "${BASE_DIR}" rev-parse HEAD:u-root)
           # Retry only dependency-download gateway failures, never the image build/tests.
@@ -200,7 +213,7 @@ jobs:
           echo "version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest=${SUBMARINE_NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected Submarine version: ${CURRENT}"
-          echo "Detected latest stable release: ${SUBMARINE_NEXT_VERSION}"
+          echo "Pinned next validation release: ${SUBMARINE_NEXT_VERSION}"
 
       - name: Test 1 - Check build artifacts exist
         id: test1
@@ -230,7 +243,8 @@ jobs:
           START_TIME=$(date +%s)
           BASE_DIR="${{ steps.install.outputs.base_dir }}"
           TAG=$(git -C "${BASE_DIR}" describe --tags --exact-match | sed 's/^v//')
-          if [ "${TAG}" = "${SUBMARINE_VERSION}" ]; then
+          SOURCE_COMMIT=$(git -C "${BASE_DIR}" rev-parse HEAD)
+          if [ "${TAG}" = "${SUBMARINE_VERSION}" ] && [ "${SOURCE_COMMIT}" = "${SUBMARINE_SOURCE_COMMIT}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "Expected ${SUBMARINE_VERSION}, got ${TAG}"
@@ -321,6 +335,32 @@ jobs:
           NEXT_DIR="${SUBMARINE_WORKROOT}/regression"
           STATUS="failed"
 
+          fail_regression() {
+            local decision="$1"
+            local result="$2"
+            local comparison="$3"
+            local installed="${4:-not_installed}"
+            echo "next_installed_version=${installed}" >> "$GITHUB_OUTPUT"
+            echo "decision=${decision}" >> "$GITHUB_OUTPUT"
+            echo "regression_result=${result}" >> "$GITHUB_OUTPUT"
+            echo "comparison=${comparison}" >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            local end_time
+            end_time=$(date +%s)
+            echo "duration=$((end_time - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+
+          unexpected_regression_failure() {
+            local failure_status=$?
+            trap - ERR
+            fail_regression \
+              "next_install_failed" \
+              "Unexpected next-version validation failure on Arm64" \
+              "Candidate v${LATEST} stopped before completing its bounded Arm64 validation (exit ${failure_status})."
+          }
+          trap unexpected_regression_failure ERR
+
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
@@ -342,7 +382,7 @@ jobs:
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path in this run, but the latest stable upstream tag could not be resolved for isolated regression validation." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path in this run, but the pinned next validation release was unavailable for isolated regression validation." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -350,8 +390,47 @@ jobs:
           fi
 
           rm -rf "${NEXT_DIR}"
-          git clone --depth 1 --branch "v${LATEST}" --recurse-submodules "${SUBMARINE_REPO}" "${NEXT_DIR}"
+          if ! git clone --depth 1 --branch "v${LATEST}" "${SUBMARINE_REPO}" "${NEXT_DIR}"; then
+            fail_regression \
+              "next_download_failed" \
+              "Next version source download failed on Arm64" \
+              "Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path, but the exact candidate tag v${LATEST} could not be cloned."
+          fi
           git config --global --add safe.directory "${NEXT_DIR}"
+          if ! NEXT_SOURCE_COMMIT=$(git -C "${NEXT_DIR}" rev-parse HEAD) || [ "${NEXT_SOURCE_COMMIT}" != "${SUBMARINE_NEXT_SOURCE_COMMIT}" ]; then
+            fail_regression \
+              "next_source_preflight_failed" \
+              "Next version source identity validation failed on Arm64" \
+              "Candidate v${LATEST} did not resolve to the reviewed immutable Submarine commit ${SUBMARINE_NEXT_SOURCE_COMMIT}."
+          fi
+          if ! DECLARED_KERNEL_URL=$(git -C "${NEXT_DIR}" config -f .gitmodules --get submodule.kernel.url) || [ "${DECLARED_KERNEL_URL}" != "${SUBMARINE_KERNEL_UPSTREAM}" ]; then
+            fail_regression \
+              "next_source_preflight_failed" \
+              "Next version kernel source identity validation failed on Arm64" \
+              "Candidate v${LATEST} did not declare the reviewed Linux stable-tree source."
+          fi
+          if ! git -C "${NEXT_DIR}" config submodule.kernel.url "${SUBMARINE_KERNEL_MIRROR}"; then
+            fail_regression \
+              "next_source_preflight_failed" \
+              "Next version mirror configuration failed on Arm64" \
+              "The reviewed Linux stable-tree mirror could not be configured for candidate v${LATEST}."
+          fi
+          if ! git -C "${NEXT_DIR}" submodule update --init --depth 1 --jobs 2 u-root kernel; then
+            fail_regression \
+              "next_download_failed" \
+              "Next version submodule download failed on Arm64" \
+              "Candidate v${LATEST} could not fetch its exact reviewed u-root and Linux gitlinks through the approved transports."
+          fi
+          for SUBMODULE in u-root kernel; do
+            if ! EXPECTED_SUBMODULE_COMMIT=$(git -C "${NEXT_DIR}" rev-parse "HEAD:${SUBMODULE}") || \
+               ! ACTUAL_SUBMODULE_COMMIT=$(git -C "${NEXT_DIR}/${SUBMODULE}" rev-parse HEAD) || \
+               [ "${ACTUAL_SUBMODULE_COMMIT}" != "${EXPECTED_SUBMODULE_COMMIT}" ]; then
+              fail_regression \
+                "next_source_preflight_failed" \
+                "Next version submodule identity validation failed on Arm64" \
+                "Candidate v${LATEST} did not check out the exact ${SUBMODULE} commit recorded by its reviewed parent source."
+            fi
+          done
           UROOT_COMMIT=$(git -C "${NEXT_DIR}" rev-parse HEAD:u-root)
           # Retry only dependency-download gateway failures, never the image build/tests.
           UROOT_LOG=$(mktemp)
@@ -365,7 +444,10 @@ jobs:
             cat "${UROOT_LOG}" >&2
             if [ "${ATTEMPT}" -eq 3 ] || ! grep -Eq 'reading https://[^[:space:]]+: 50[234]([[:space:]]|$)' "${UROOT_LOG}"; then
               rm -f "${UROOT_LOG}"
-              exit "${UROOT_STATUS}"
+              fail_regression \
+                "next_install_failed" \
+                "Next version u-root installation failed on Arm64" \
+                "Candidate v${LATEST} could not install its exact reviewed u-root dependency on Arm64."
             fi
             echo "u-root dependency download failed; retrying setup ($((ATTEMPT + 1))/3)." >&2
             sleep "$((ATTEMPT * 5))"
@@ -374,18 +456,26 @@ jobs:
           JOBS=$(nproc)
           if ! timeout 30m bash -lc "make -C '${NEXT_DIR}' -j'${JOBS}' arm64 > /tmp/submarine-next-build.log 2>&1"; then
             cat /tmp/submarine-next-build.log || true
-            echo "next_installed_version=build_failed" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path in this run, but candidate version ${LATEST} failed during the next-version build on Arm64." >> "$GITHUB_OUTPUT"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            END_TIME=$(date +%s)
-            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
-            exit 1
+            fail_regression \
+              "next_install_failed" \
+              "Next version install failed on Arm64" \
+              "Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path in this run, but candidate version ${LATEST} failed during the next-version build on Arm64." \
+              "build_failed"
           fi
-          NEXT_VERSION=$(git -C "${NEXT_DIR}" describe --tags --exact-match | sed 's/^v//')
-          parted -s "${NEXT_DIR}/images/submarine-a64.bin" unit s print > /tmp/submarine-next-parted.txt 2>&1
-          NEXT_IMAGE_SIZE=$(stat -c%s "${NEXT_DIR}/images/submarine-a64.bin")
+          if ! NEXT_VERSION=$(git -C "${NEXT_DIR}" describe --tags --exact-match | sed 's/^v//'); then
+            fail_regression \
+              "next_source_preflight_failed" \
+              "Next version tag validation failed on Arm64" \
+              "Candidate source did not retain the reviewed exact v${LATEST} tag identity after the Arm64 build."
+          fi
+          if ! parted -s "${NEXT_DIR}/images/submarine-a64.bin" unit s print > /tmp/submarine-next-parted.txt 2>&1 || \
+             ! NEXT_IMAGE_SIZE=$(stat -c%s "${NEXT_DIR}/images/submarine-a64.bin"); then
+            fail_regression \
+              "next_artifact_validation_failed" \
+              "Next version image validation failed on Arm64" \
+              "Candidate v${LATEST} did not produce a readable Arm64 disk image for bounded validation." \
+              "${NEXT_VERSION}"
+          fi
           gzip -cd "${NEXT_DIR}/build/bzImage.a64" >/tmp/submarine-bzImage-next || true
           NEXT_KERNEL_DESC=$(file /tmp/submarine-bzImage-next 2>/dev/null || true)
           NEXT_GPT_OK=0
@@ -405,7 +495,7 @@ jobs:
             if [ "${CURRENT}" = "${LATEST}" ]; then
               echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
               echo "regression_result=Pending regression install validation" >> "$GITHUB_OUTPUT"
-              echo "comparison=Current pinned Submarine version ${CURRENT} already matches the newest public stable Submarine release found by this workflow. Tests 1-5 validate the real Arm64 image-build path, but the dashboard anchor is already too recent to leave a clean aged baseline above it, so this package needs metadata or policy review before claiming a genuine Test 6 upgrade step." >> "$GITHUB_OUTPUT"
+              echo "comparison=Current pinned Submarine version ${CURRENT} already matches the pinned next validation release. Tests 1-5 validate the real Arm64 image-build path, but the dashboard anchor leaves no distinct upgrade step, so this package needs metadata or policy review before claiming a genuine Test 6 upgrade." >> "$GITHUB_OUTPUT"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               STATUS="failed"
             else
@@ -420,7 +510,7 @@ jobs:
             echo "${NEXT_KERNEL_DESC:-kernel-description-unavailable}" || true
             echo "Next image size: ${NEXT_IMAGE_SIZE:-unknown}" || true
             echo "next_installed_version=${NEXT_VERSION:-not_installed}" >> "$GITHUB_OUTPUT"
-            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_artifact_validation_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current pinned Submarine version ${CURRENT} completed the real Arm64 boot-image build path in this run, but candidate version ${LATEST} did not rebuild into a valid Arm64 image artifact set." >> "$GITHUB_OUTPUT"
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -453,6 +543,7 @@ jobs:
           set -euo pipefail
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -474,15 +565,16 @@ jobs:
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
 
-          if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
+          case "${{ steps.test6.outputs.status || 'failed' }}" in
+            passed) PASSED=$((PASSED + 1)) ;;
+            skipped) SKIPPED=$((SKIPPED + 1)) ;;
+            *) FAILED=$((FAILED + 1)) ;;
+          esac
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "skipped=${SKIPPED}" >> "$GITHUB_OUTPUT"
           echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
 
@@ -508,6 +600,7 @@ jobs:
             echo "- **Status:** ${{ steps.summary.outputs.overall_status }}"
             echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}"
             echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}"
+            echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}"
             echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s"
             echo "- **Runner:** ubuntu-24.04 (arm64)"
             echo ""
