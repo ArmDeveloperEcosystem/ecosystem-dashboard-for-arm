@@ -74,6 +74,8 @@ jobs:
             WORKFLOW="test-all-packages-batch${i}.yml"
             nonce_file=".orchestration/dispatch-nonce-${i}"
             payload=".orchestration/dispatch-${i}.json"
+            baseline_payload=".orchestration/registration-before-${i}.json"
+            baseline_candidate="${baseline_payload}.tmp"
             runs_payload=".orchestration/registration-${i}.json"
             endpoint="$(python3 "$helper" runs-endpoint \
               --batch "$i" \
@@ -94,13 +96,32 @@ jobs:
               --branch "$BRANCH" \
               --output "$payload"
 
-            dispatch_reported_success=true
+            baseline_captured=false
+            for baseline_attempt in {1..5}; do
+              if gh api --paginate --slurp "$endpoint" > "$baseline_candidate"; then
+                if python3 "$helper" validate-runs-payload \
+                  --payload "$baseline_candidate"; then
+                  mv "$baseline_candidate" "$baseline_payload"
+                  baseline_captured=true
+                  break
+                fi
+                echo "Pre-dispatch run snapshot was malformed for $WORKFLOW."
+              fi
+              echo "Pre-dispatch run snapshot failed for $WORKFLOW (attempt $baseline_attempt/5)."
+              sleep 10
+            done
+            if [[ "$baseline_captured" != "true" ]]; then
+              echo "Cannot safely dispatch $WORKFLOW without a pre-dispatch run snapshot."
+              exit 1
+            fi
+
+            dispatch_outcome="success"
             if gh api --method POST \
               "repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches" \
               --input "$payload"; then
               echo "Dispatched $WORKFLOW for $ORCHESTRATION_ID."
             else
-              dispatch_reported_success=false
+              dispatch_outcome="ambiguous"
               echo "Dispatch API returned an error for $WORKFLOW; checking exact registration once visible."
             fi
 
@@ -111,6 +132,8 @@ jobs:
                 api_failures=0
                 RUN_ID="$(python3 "$helper" select-registration \
                   --payload "$runs_payload" \
+                  --baseline-payload "$baseline_payload" \
+                  --dispatch-outcome "$dispatch_outcome" \
                   --batch "$i" \
                   --orchestration-id "$ORCHESTRATION_ID" \
                   --dispatch-nonce-file "$nonce_file" \
@@ -133,7 +156,7 @@ jobs:
 
             if [[ -z "$RUN_ID" ]]; then
               echo "No unique exact run registered for $WORKFLOW."
-              if [[ "$dispatch_reported_success" != "true" ]]; then
+              if [[ "$dispatch_outcome" != "success" ]]; then
                 echo "The dispatch API also reported failure; no automatic redispatch was attempted."
               fi
               exit 1
@@ -145,7 +168,7 @@ jobs:
               --run-id "$RUN_ID" \
               --run-attempt 1
             rm -f "$nonce_file"
-            echo "Captured immutable run $RUN_ID for $WORKFLOW."
+            echo "Captured provisional run $RUN_ID for $WORKFLOW."
           done
 
           python3 "$helper" build-manifest \
@@ -153,7 +176,7 @@ jobs:
             --orchestration-id "$ORCHESTRATION_ID" \
             --expected-sha "$EXPECTED_SHA" \
             --branch "$BRANCH" \
-            --output .orchestration/run-manifest.json
+            --output .orchestration/provisional-run-manifest.json
 
       - name: Wait for captured batch runs
         id: wait
@@ -166,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           helper=".github/scripts/orchestration_contract.py"
-          manifest=".orchestration/run-manifest.json"
+          manifest=".orchestration/provisional-run-manifest.json"
           failed_batches=()
 
           retry_delay() {
@@ -213,7 +236,8 @@ jobs:
                 --branch "$BRANCH" \
                 --repository "$REPOSITORY" \
                 --expected-run-id "$RUN_ID" \
-                --allow-incomplete)"
+                --allow-incomplete \
+                --allow-pending-static-title)"
               IFS=$'\t' read -r STATUS CONCLUSION <<< "$state"
               if [[ "$STATUS" == "completed" ]]; then
                 completed=true
@@ -225,6 +249,11 @@ jobs:
                 fi
                 break
               fi
+              if [[ "$STATUS" == "identity_pending" ]]; then
+                echo "$WORKFLOW run $RUN_ID is waiting for its nonce-bound identity (attempt $attempt/330)."
+                sleep 60
+                continue
+              fi
               echo "$WORKFLOW run $RUN_ID is $STATUS (attempt $attempt/330)."
               sleep 60
             done
@@ -234,6 +263,8 @@ jobs:
               exit 1
             fi
           done
+
+          mv "$manifest" .orchestration/run-manifest.json
 
           failed_batch_count="${#failed_batches[@]}"
           if [[ "$failed_batch_count" -gt 0 ]]; then
@@ -363,6 +394,38 @@ jobs:
 
           echo "Global Summary run $summary_run_id did not complete within the bounded wait."
           exit 1
+
+      - name: Cancel incomplete captured batch runs
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          helper=".github/scripts/orchestration_contract.py"
+          records=".orchestration/batch-records.json"
+          [[ -f "$records" ]] || exit 0
+
+          while IFS= read -r run_id; do
+            run_payload=".orchestration/cleanup-run-${run_id}.json"
+            if ! gh api \
+              "repos/${REPOSITORY}/actions/runs/${run_id}" \
+              > "$run_payload"; then
+              echo "Could not inspect captured run $run_id during cleanup."
+              continue
+            fi
+            status="$(jq -r '.status // empty' "$run_payload")"
+            if [[ "$status" == "completed" ]]; then
+              continue
+            fi
+            echo "Canceling incomplete captured run $run_id (status: ${status:-unknown})."
+            if ! gh api --method POST \
+              "repos/${REPOSITORY}/actions/runs/${run_id}/cancel"; then
+              gh api --method POST \
+                "repos/${REPOSITORY}/actions/runs/${run_id}/force-cancel" || \
+                echo "GitHub did not accept cancellation for captured run $run_id."
+            fi
+          done < <(python3 "$helper" captured-run-ids --records "$records")
 
       - name: Conclude exact orchestration
         if: ${{ always() && steps.wait.outcome == 'success' }}
