@@ -323,20 +323,50 @@ def select_exact_registration(
     expected_sha: str,
     branch: str,
     repository: str,
+    baseline_payload: object | None = None,
+    dispatch_reported_success: bool = False,
 ) -> int | None:
-    raw_runs = _workflow_runs(payload)
+    raw_runs = list(_workflow_runs_by_id(payload).values())
     title = expected_run_name(batch, orchestration_id, dispatch_nonce)
     titled_runs = [
         item
         for item in raw_runs
         if isinstance(item, Mapping) and item.get("display_title") == title
     ]
-    if not titled_runs:
+    if titled_runs:
+        if len(titled_runs) != 1:
+            raise ContractError("multiple runs have the exact orchestration run-name")
+        run = validate_run(
+            titled_runs[0],
+            batch=batch,
+            orchestration_id=orchestration_id,
+            dispatch_nonce=dispatch_nonce,
+            expected_sha=expected_sha,
+            branch=branch,
+            repository=repository,
+            require_completed=False,
+        )
+        return run["id"]
+
+    if baseline_payload is None or not dispatch_reported_success:
         return None
-    if len(titled_runs) != 1:
-        raise ContractError("multiple runs have the exact orchestration run-name")
+
+    baseline_ids = set(_workflow_runs_by_id(baseline_payload))
+    static_name = expected_workflow_name(batch)
+    pending_candidates = [
+        item
+        for item in raw_runs
+        if isinstance(item, Mapping)
+        and item.get("id") not in baseline_ids
+        and item.get("name") == static_name
+        and item.get("display_title") == static_name
+    ]
+    if not pending_candidates:
+        return None
+    if len(pending_candidates) != 1:
+        raise ContractError("multiple new pending runs match the static workflow title")
     run = validate_run(
-        titled_runs[0],
+        pending_candidates[0],
         batch=batch,
         orchestration_id=orchestration_id,
         dispatch_nonce=dispatch_nonce,
@@ -344,6 +374,7 @@ def select_exact_registration(
         branch=branch,
         repository=repository,
         require_completed=False,
+        allow_pending_static_title=True,
     )
     return run["id"]
 
@@ -357,7 +388,7 @@ def select_exact_summary_registration(
     branch: str,
     repository: str,
 ) -> int | None:
-    raw_runs = _workflow_runs(payload)
+    raw_runs = list(_workflow_runs_by_id(payload).values())
     validated_manifest = validate_manifest(
         manifest,
         expected_sha=expected_sha,
@@ -409,6 +440,18 @@ def _workflow_runs(payload: object) -> list[object]:
     return raw_runs
 
 
+def _workflow_runs_by_id(payload: object) -> dict[int, Mapping[str, Any]]:
+    runs_by_id: dict[int, Mapping[str, Any]] = {}
+    for item in _workflow_runs(payload):
+        run = _require_mapping(item, "workflow run list entry")
+        run_id = _positive_int(run.get("id"), "workflow run list entry id")
+        previous = runs_by_id.get(run_id)
+        if previous is not None and previous != run:
+            raise ContractError("workflow run list contains a conflicting duplicate id")
+        runs_by_id[run_id] = run
+    return runs_by_id
+
+
 def validate_run(
     payload: object,
     *,
@@ -420,6 +463,7 @@ def validate_run(
     repository: str,
     expected_run_id: int | None = None,
     require_completed: bool,
+    allow_pending_static_title: bool = False,
 ) -> dict[str, Any]:
     run = _require_mapping(payload, "workflow run")
     run_id = _positive_int(run.get("id"), "workflow run id")
@@ -436,13 +480,34 @@ def validate_run(
         orchestration_id,
         dispatch_nonce,
     )
+    static_name = expected_workflow_name(batch)
     api_name = run.get("name")
-    if api_name not in {expected_workflow_name(batch), run_title}:
+    if api_name not in {static_name, run_title}:
         raise ContractError("workflow run has unexpected name")
+
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+    display_title = run.get("display_title")
+    pending_static_title = api_name == static_name and display_title == static_name
+    if pending_static_title:
+        if (
+            not allow_pending_static_title
+            or require_completed
+            or status not in _INCOMPLETE_STATUSES
+            or conclusion is not None
+        ):
+            raise ContractError("workflow run has unexpected display_title")
+        for actor_key in ("actor", "triggering_actor"):
+            actor = _require_mapping(
+                run.get(actor_key), f"workflow run {actor_key}"
+            )
+            if actor.get("login") != "github-actions[bot]":
+                raise ContractError(f"workflow run has unexpected {actor_key}")
+    elif display_title != run_title:
+        raise ContractError("workflow run has unexpected display_title")
 
     expected = {
         "path": expected_workflow_path(batch),
-        "display_title": run_title,
         "event": "workflow_dispatch",
         "head_branch": validate_branch(branch),
         "head_sha": validate_sha(expected_sha),
@@ -457,8 +522,6 @@ def validate_run(
     if repository_payload.get("full_name") != validate_repository(repository):
         raise ContractError("workflow run belongs to an unexpected repository")
 
-    status = run.get("status")
-    conclusion = run.get("conclusion")
     if status == "completed":
         if conclusion not in _ALLOWED_CONCLUSIONS:
             raise ContractError("completed workflow run has a rejected conclusion")
@@ -470,7 +533,7 @@ def validate_run(
     return {
         "id": run_id,
         "run_attempt": run_attempt,
-        "status": status,
+        "status": "identity_pending" if pending_static_title else status,
         "conclusion": conclusion,
     }
 
@@ -647,6 +710,33 @@ def _validate_record(payload: object, *, expected_batch: int) -> dict[str, Any]:
         "run_id": _positive_int(record["run_id"], "run_id"),
         "run_attempt": _original_run_attempt(record["run_attempt"]),
     }
+
+
+def captured_run_ids(payload: object) -> list[int]:
+    if not isinstance(payload, list) or len(payload) > BATCH_COUNT:
+        raise ContractError("records must be one bounded JSON array")
+
+    run_ids: list[int] = []
+    for expected_batch, raw_record in enumerate(payload, start=1):
+        record = _require_mapping(raw_record, f"batch {expected_batch} record")
+        if set(record) == _RECORD_KEYS:
+            validated = _validate_record(record, expected_batch=expected_batch)
+            run_ids.append(validated["run_id"])
+            continue
+        if set(record) != _PENDING_RECORD_KEYS:
+            raise ContractError("partial records contain an unexpected record shape")
+        batch = _positive_int(record.get("batch"), "batch number")
+        if batch != expected_batch:
+            raise ContractError("partial records are missing, extra, or out of order")
+        if record.get("workflow") != expected_workflow(batch):
+            raise ContractError("partial records contain an unexpected workflow name")
+        if record.get("artifact") != expected_artifact(batch):
+            raise ContractError("partial records contain an unexpected artifact name")
+        validate_dispatch_nonce(record.get("dispatch_nonce"))
+
+    if len(run_ids) != len(set(run_ids)):
+        raise ContractError("partial records contain duplicate workflow run ids")
+    return run_ids
 
 
 def _validate_batch(value: object) -> int:
@@ -855,8 +945,17 @@ def _build_parser() -> argparse.ArgumentParser:
     summary_endpoint.add_argument("--expected-sha", required=True)
     summary_endpoint.add_argument("--repository", required=True)
 
+    runs_payload = subparsers.add_parser("validate-runs-payload")
+    runs_payload.add_argument("--payload", type=Path, required=True)
+
     select = subparsers.add_parser("select-registration")
     select.add_argument("--payload", type=Path, required=True)
+    select.add_argument("--baseline-payload", type=Path)
+    select.add_argument(
+        "--dispatch-outcome",
+        choices=("success", "ambiguous"),
+        default="ambiguous",
+    )
     select.add_argument("--batch", type=int, required=True)
     select.add_argument("--orchestration-id", required=True)
     select_nonce = select.add_mutually_exclusive_group(required=True)
@@ -890,6 +989,9 @@ def _build_parser() -> argparse.ArgumentParser:
     bind.add_argument("--dispatch-nonce-file", type=Path, required=True)
     bind.add_argument("--run-id", type=int, required=True)
     bind.add_argument("--run-attempt", type=int, required=True)
+
+    captured = subparsers.add_parser("captured-run-ids")
+    captured.add_argument("--records", type=Path, required=True)
 
     build = subparsers.add_parser("build-manifest")
     build.add_argument("--records", type=Path, required=True)
@@ -929,6 +1031,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--repository", required=True)
     run.add_argument("--expected-run-id", type=int, required=True)
     run.add_argument("--allow-incomplete", action="store_true")
+    run.add_argument("--allow-pending-static-title", action="store_true")
 
     summary_dispatch = subparsers.add_parser("validate-summary-dispatch")
     summary_dispatch.add_argument("--manifest", type=Path, required=True)
@@ -1029,6 +1132,8 @@ def _main(arguments: Sequence[str]) -> int:
             }
         )
         print(f"repos/{repository}/actions/workflows/{SUMMARY_WORKFLOW}/runs?{query}")
+    elif args.command == "validate-runs-payload":
+        print(len(_workflow_runs_by_id(_load_json(args.payload))))
     elif args.command == "select-registration":
         dispatch_nonce = (
             _load_dispatch_nonce(args.dispatch_nonce_file)
@@ -1043,6 +1148,12 @@ def _main(arguments: Sequence[str]) -> int:
             expected_sha=args.expected_sha,
             branch=args.branch,
             repository=args.repository,
+            baseline_payload=(
+                _load_json(args.baseline_payload)
+                if args.baseline_payload is not None
+                else None
+            ),
+            dispatch_reported_success=args.dispatch_outcome == "success",
         )
         if run_id is not None:
             print(run_id)
@@ -1089,6 +1200,9 @@ def _main(arguments: Sequence[str]) -> int:
                 run_attempt=args.run_attempt,
             ),
         )
+    elif args.command == "captured-run-ids":
+        for run_id in captured_run_ids(_load_json(args.records)):
+            print(run_id)
     elif args.command == "build-manifest":
         manifest = build_manifest(
             orchestration_id=args.orchestration_id,
@@ -1145,6 +1259,7 @@ def _main(arguments: Sequence[str]) -> int:
             repository=args.repository,
             expected_run_id=args.expected_run_id,
             require_completed=not args.allow_incomplete,
+            allow_pending_static_title=args.allow_pending_static_title,
         )
         print(f"{result['status']}\t{result['conclusion'] or ''}")
     elif args.command == "validate-summary-dispatch":

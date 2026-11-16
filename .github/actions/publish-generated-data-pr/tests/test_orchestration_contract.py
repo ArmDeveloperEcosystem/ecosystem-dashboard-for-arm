@@ -19,6 +19,7 @@ from orchestration_contract import (  # noqa: E402
     PREFETCH_BATCHES,
     batch_dispatch_payload,
     build_manifest,
+    captured_run_ids,
     canonical_json,
     expected_artifact,
     expected_run_name,
@@ -96,8 +97,25 @@ def run_payload(
         "head_sha": EXPECTED_SHA,
         "status": status,
         "conclusion": conclusion,
+        "actor": {"login": "github-actions[bot]"},
+        "triggering_actor": {"login": "github-actions[bot]"},
         "repository": {"full_name": REPOSITORY},
     }
+
+
+def queued_static_run_payload(
+    batch: int,
+    *,
+    run_id: int | None = None,
+) -> dict[str, object]:
+    payload = run_payload(
+        batch,
+        run_id=run_id,
+        status="queued",
+        conclusion=None,
+    )
+    payload["display_title"] = expected_workflow_name(batch)
+    return payload
 
 
 def summary_run_payload(
@@ -145,6 +163,28 @@ def artifacts_payload(
 
 
 class ManifestContractTests(unittest.TestCase):
+    def test_partial_records_expose_only_valid_bound_run_ids(self) -> None:
+        partial = records()[:2]
+        partial.append(
+            {
+                "batch": 3,
+                "workflow": expected_workflow(3),
+                "artifact": expected_artifact(3),
+                "dispatch_nonce": nonce_for(3),
+            }
+        )
+        self.assertEqual(captured_run_ids(partial), [10_001, 10_002])
+
+        malformed = copy.deepcopy(partial)
+        malformed[1]["run_id"] = 10_001
+        with self.assertRaisesRegex(ContractError, "duplicate workflow run ids"):
+            captured_run_ids(malformed)
+
+        reordered = copy.deepcopy(partial)
+        reordered[2]["batch"] = 4
+        with self.assertRaisesRegex(ContractError, "out of order"):
+            captured_run_ids(reordered)
+
     def test_builds_one_canonical_compact_22_record_manifest(self) -> None:
         payload = manifest()
         self.assertEqual(len(payload["batches"]), BATCH_COUNT)
@@ -504,11 +544,206 @@ class ManifestContractTests(unittest.TestCase):
 
 
 class RunIdentityTests(unittest.TestCase):
+    def test_new_bot_created_queued_run_can_be_bound_from_baseline_delta(self) -> None:
+        candidate = queued_static_run_payload(1)
+        self.assertIsNone(
+            select_exact_registration(
+                {"workflow_runs": [candidate]},
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+        )
+        self.assertIsNone(
+            select_exact_registration(
+                {"workflow_runs": [candidate]},
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                baseline_payload={"workflow_runs": []},
+                dispatch_reported_success=False,
+            )
+        )
+        self.assertEqual(
+            select_exact_registration(
+                {"workflow_runs": [candidate]},
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                baseline_payload={"workflow_runs": []},
+                dispatch_reported_success=True,
+            ),
+            10_001,
+        )
+
+        self.assertIsNone(
+            select_exact_registration(
+                {"workflow_runs": [candidate]},
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                baseline_payload={"workflow_runs": [candidate]},
+                dispatch_reported_success=True,
+            )
+        )
+
+        self.assertEqual(
+            select_exact_registration(
+                [
+                    {"workflow_runs": [candidate]},
+                    {"workflow_runs": [copy.deepcopy(candidate)]},
+                ],
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                baseline_payload={"workflow_runs": []},
+                dispatch_reported_success=True,
+            ),
+            10_001,
+        )
+
+        conflicting = copy.deepcopy(candidate)
+        conflicting["head_branch"] = "release"
+        with self.assertRaisesRegex(ContractError, "conflicting duplicate id"):
+            select_exact_registration(
+                [
+                    {"workflow_runs": [candidate]},
+                    {"workflow_runs": [conflicting]},
+                ],
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                baseline_payload={"workflow_runs": []},
+                dispatch_reported_success=True,
+            )
+
+    def test_queued_static_registration_fails_closed(self) -> None:
+        first = queued_static_run_payload(1)
+        second = queued_static_run_payload(1, run_id=77_777)
+        with self.assertRaisesRegex(ContractError, "multiple new pending runs"):
+            select_exact_registration(
+                {"workflow_runs": [first, second]},
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                baseline_payload={"workflow_runs": []},
+                dispatch_reported_success=True,
+            )
+
+        for field, value in (
+            ("actor", {"login": "example-user"}),
+            ("triggering_actor", {"login": "example-user"}),
+            ("head_sha", "b" * 40),
+        ):
+            candidate = queued_static_run_payload(1)
+            candidate[field] = value
+            with self.subTest(field=field):
+                with self.assertRaises(ContractError):
+                    select_exact_registration(
+                        {"workflow_runs": [candidate]},
+                        batch=1,
+                        orchestration_id=ORCHESTRATION_ID,
+                        dispatch_nonce=nonce_for(1),
+                        expected_sha=EXPECTED_SHA,
+                        branch=BRANCH,
+                        repository=REPOSITORY,
+                        baseline_payload={"workflow_runs": []},
+                        dispatch_reported_success=True,
+                    )
+
+    def test_static_title_is_allowed_only_while_queued_and_explicit(self) -> None:
+        candidate = queued_static_run_payload(1)
+        result = validate_run(
+            candidate,
+            batch=1,
+            orchestration_id=ORCHESTRATION_ID,
+            dispatch_nonce=nonce_for(1),
+            expected_sha=EXPECTED_SHA,
+            branch=BRANCH,
+            repository=REPOSITORY,
+            expected_run_id=10_001,
+            require_completed=False,
+            allow_pending_static_title=True,
+        )
+        self.assertEqual(result["status"], "identity_pending")
+
+        with self.assertRaisesRegex(ContractError, "display_title"):
+            validate_run(
+                candidate,
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=10_001,
+                require_completed=False,
+            )
+
+        for status in ("requested", "waiting", "pending", "in_progress"):
+            changed = queued_static_run_payload(1)
+            changed["status"] = status
+            with self.subTest(status=status):
+                self.assertEqual(
+                    validate_run(
+                        changed,
+                        batch=1,
+                        orchestration_id=ORCHESTRATION_ID,
+                        dispatch_nonce=nonce_for(1),
+                        expected_sha=EXPECTED_SHA,
+                        branch=BRANCH,
+                        repository=REPOSITORY,
+                        expected_run_id=10_001,
+                        require_completed=False,
+                        allow_pending_static_title=True,
+                    )["status"],
+                    "identity_pending",
+                )
+
+        completed = queued_static_run_payload(1)
+        completed["status"] = "completed"
+        completed["conclusion"] = "success"
+        with self.assertRaisesRegex(ContractError, "display_title"):
+            validate_run(
+                completed,
+                batch=1,
+                orchestration_id=ORCHESTRATION_ID,
+                dispatch_nonce=nonce_for(1),
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+                expected_run_id=10_001,
+                require_completed=False,
+                allow_pending_static_title=True,
+            )
+
     def test_overlapping_unrelated_runs_do_not_win_registration(self) -> None:
         exact = run_payload(1, status="queued", conclusion=None)
         unrelated = run_payload(1, run_id=999, status="queued", conclusion=None)
         unrelated["display_title"] = "Arm64 Batch 1 [manual-999-1]"
-        payload = {"workflow_runs": [unrelated, exact]}
+        pending_static = queued_static_run_payload(1, run_id=888)
+        payload = {"workflow_runs": [unrelated, pending_static, exact]}
         self.assertEqual(
             select_exact_registration(
                 payload,
@@ -518,6 +753,8 @@ class RunIdentityTests(unittest.TestCase):
                 expected_sha=EXPECTED_SHA,
                 branch=BRANCH,
                 repository=REPOSITORY,
+                baseline_payload={"workflow_runs": []},
+                dispatch_reported_success=True,
             ),
             10_001,
         )
@@ -794,6 +1031,38 @@ class RunIdentityTests(unittest.TestCase):
 
 
 class SummaryRunIdentityTests(unittest.TestCase):
+    def test_paginated_summary_registration_deduplicates_by_run_id(self) -> None:
+        exact = summary_run_payload(status="queued", conclusion=None)
+        self.assertEqual(
+            select_exact_summary_registration(
+                [
+                    {"workflow_runs": [exact]},
+                    {"workflow_runs": [copy.deepcopy(exact)]},
+                ],
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            ),
+            SUMMARY_RUN_ID,
+        )
+
+        conflicting = copy.deepcopy(exact)
+        conflicting["head_branch"] = "release"
+        with self.assertRaisesRegex(ContractError, "conflicting duplicate id"):
+            select_exact_summary_registration(
+                [
+                    {"workflow_runs": [exact]},
+                    {"workflow_runs": [conflicting]},
+                ],
+                manifest=manifest(),
+                dispatch_nonce=SUMMARY_NONCE,
+                expected_sha=EXPECTED_SHA,
+                branch=BRANCH,
+                repository=REPOSITORY,
+            )
+
     def test_exact_summary_registration_and_dispatch_are_accepted(self) -> None:
         summary_manifest = manifest()
         exact = summary_run_payload(status="queued", conclusion=None)
@@ -1203,8 +1472,11 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
         self.assertIn("prepare-record", orchestrator)
         self.assertIn("bind-record-run", orchestrator)
         self.assertIn("--dispatch-nonce-file \"$nonce_file\"", orchestrator)
+        self.assertIn("--baseline-payload \"$baseline_payload\"", orchestrator)
+        self.assertIn("validate-runs-payload", orchestrator)
         self.assertIn("select-registration", orchestrator)
         self.assertIn("record-runtime", orchestrator)
+        self.assertIn("captured-run-ids", orchestrator)
         self.assertIn("summary-dispatch-payload", orchestrator)
         self.assertIn("--input .orchestration/summary-dispatch.json", orchestrator)
         dispatch_step = orchestrator.split(
@@ -1214,14 +1486,44 @@ class WorkflowExactRunBindingTests(unittest.TestCase):
             dispatch_step.index("prepare-record"),
             dispatch_step.index("actions/workflows/${WORKFLOW}/dispatches"),
         )
+        self.assertLess(
+            dispatch_step.index(
+                'gh api --paginate --slurp "$endpoint" > "$baseline_candidate"'
+            ),
+            dispatch_step.index("actions/workflows/${WORKFLOW}/dispatches"),
+        )
+        self.assertLess(
+            dispatch_step.index('mv "$baseline_candidate" "$baseline_payload"'),
+            dispatch_step.index("actions/workflows/${WORKFLOW}/dispatches"),
+        )
+        self.assertIn('dispatch_outcome="success"', dispatch_step)
+        self.assertIn('dispatch_outcome="ambiguous"', dispatch_step)
+        self.assertIn('--dispatch-outcome "$dispatch_outcome"', dispatch_step)
+        self.assertIn("provisional-run-manifest.json", dispatch_step)
         self.assertNotIn('echo "$DISPATCH_NONCE"', dispatch_step)
         self.assertNotIn('cat "$nonce_file"', dispatch_step)
+        wait_step = orchestrator.split("- name: Wait for captured batch runs", 1)[
+            1
+        ].split("- name: Dispatch exact global summary", 1)[0]
+        self.assertIn("--allow-pending-static-title", wait_step)
+        self.assertIn('[[ "$STATUS" == "identity_pending" ]]', wait_step)
+        self.assertIn(
+            'mv "$manifest" .orchestration/run-manifest.json',
+            wait_step,
+        )
+        cleanup_step = orchestrator.split(
+            "- name: Cancel incomplete captured batch runs", 1
+        )[1]
+        self.assertIn("if: ${{ always() }}", cleanup_step)
+        self.assertIn("actions/runs/${run_id}/cancel", cleanup_step)
+        self.assertIn("actions/runs/${run_id}/force-cancel", cleanup_step)
 
         self.assertIn("run_manifest:", summary)
         self.assertIn("expected_sha:", summary)
         self.assertIn("required: true", summary)
         self.assertIn("validate-manifest-env", summary)
         self.assertIn("validate-run", summary)
+        self.assertNotIn("--allow-pending-static-title", summary)
         self.assertIn("validate-artifacts", summary)
         self.assertIn(
             'attestation_helper=".github/scripts/batch_artifact_attestation.py"',
