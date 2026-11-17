@@ -187,15 +187,12 @@ client.write_text(
     "    trace.write('smbclient ' + ' '.join(args) + '\\n')\n"
     "if '--version' in args:\n"
     "    print('Version " + built_version + "')\n"
-    "elif '-L' in args:\n"
+    "elif '-c' in args:\n"
     "    import time\n"
-    "    if os.environ.get('FAIL_STAGE') == 'probe-list': raise SystemExit(1)\n"
     "    for _ in range(100):\n"
     "        if 'smbd-start' in Path(os.environ['TRACE']).read_text(): break\n"
     "        time.sleep(0.01)\n"
     "    else: raise SystemExit(1)\n"
-    "    print('        smoke        Disk')\n"
-    "elif '-c' in args:\n"
     "    if os.environ.get('FAIL_STAGE') == 'probe-read': raise SystemExit(1)\n"
     "    command = shlex.split(args[args.index('-c') + 1])\n"
     "    destination = Path(command[-1])\n"
@@ -304,6 +301,9 @@ print(f"{sys.argv[-1]}: ELF 64-bit LSB pie executable, ARM aarch64")
         }
         script = self.render(step["run"], bindings)
         script = script.replace("/tmp/samba-", str(self.root / "samba-"))
+        script = script.replace(
+            "for _ in $(seq 1 30); do", "for _ in $(seq 1 2); do"
+        )
         self.output.write_text("")
         self.trace.write_text("")
         result = subprocess.run(
@@ -386,8 +386,9 @@ print(f"{sys.argv[-1]}: ELF 64-bit LSB pie executable, ARM aarch64")
         self.assertIn("smb ports = $smb_port", test5)
         self.assertIn("guest ok = yes", test5)
         self.assertIn("read only = yes", test5)
-        self.assertIn("-L 127.0.0.1", test5)
-        self.assertIn("get marker.txt $downloaded_marker", test5)
+        self.assertNotIn("-L 127.0.0.1", test5)
+        self.assertIn('"//127.0.0.1/smoke"', test5)
+        self.assertIn("ls; get marker.txt $downloaded_marker", test5)
         self.assertIn('cmp -s "$share_dir/marker.txt" "$downloaded_marker"', test5)
         self.assertIn("cleanup_probe_success", test5)
         self.assertIn('kill -TERM -- "-$smbd_pid"', test5)
@@ -399,7 +400,7 @@ print(f"{sys.argv[-1]}: ELF 64-bit LSB pie executable, ARM aarch64")
         self.assertEqual("passed", fields["status"])
         trace = self.trace.read_text()
         self.assertIn("smbd-start", trace)
-        self.assertIn("smbclient -L 127.0.0.1", trace)
+        self.assertIn("smbclient //127.0.0.1/smoke", trace)
         self.assertIn("get marker.txt", trace)
         self.assertIn("smbd-cleanup", trace)
         self.assert_no_probe_directory("baseline")
