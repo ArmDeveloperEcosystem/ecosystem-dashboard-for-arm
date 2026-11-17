@@ -79,9 +79,11 @@ on:
 jobs:
   test-samba:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
     env:
       SAMBA_VERSION: "4.23.6"
       SAMBA_WORKDIR: "/tmp/samba-smoke"
+      SAMBA_RELEASE_FINGERPRINT: "81F5E2832BD2545A1897B713AA99442FB680B620"
 
     outputs:
       contract_version: "2.0"
@@ -134,6 +136,7 @@ jobs:
             file \
             flex \
             bison \
+            gnupg \
             libacl1-dev \
             libarchive-dev \
             libattr1-dev \
@@ -159,9 +162,51 @@ jobs:
 
           rm -rf "${SAMBA_WORKDIR}"
           mkdir -p "${SAMBA_WORKDIR}"
-          curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 -o "${SAMBA_WORKDIR}/samba-${SAMBA_VERSION}.tar.gz" \
+          BASE_ARCHIVE="${SAMBA_WORKDIR}/samba-${SAMBA_VERSION}.tar.gz"
+          BASE_TAR="${SAMBA_WORKDIR}/samba-${SAMBA_VERSION}.tar"
+          BASE_SIGNATURE="${SAMBA_WORKDIR}/samba-${SAMBA_VERSION}.tar.asc"
+          BASE_PUBLIC_KEY="${SAMBA_WORKDIR}/samba-pubkey.asc"
+          BASE_GNUPGHOME="${SAMBA_WORKDIR}/gnupg"
+
+          download_bounded() {
+            local destination="$1"
+            local url="$2"
+            timeout --kill-after=5s 960s curl -fL \
+              --retry 5 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --connect-timeout 20 \
+              --max-time 900 \
+              -o "$destination" \
+              "$url"
+          }
+
+          download_bounded "$BASE_ARCHIVE" \
             "https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz"
-          tar -xzf "${SAMBA_WORKDIR}/samba-${SAMBA_VERSION}.tar.gz" -C "${SAMBA_WORKDIR}"
+          download_bounded "$BASE_SIGNATURE" \
+            "https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.asc"
+          download_bounded "$BASE_PUBLIC_KEY" \
+            "https://download.samba.org/pub/samba/samba-pubkey.asc"
+
+          mkdir -m 0700 "$BASE_GNUPGHOME"
+          KEY_FINGERPRINTS="$(
+            GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --with-colons \
+              --import-options show-only --import "$BASE_PUBLIC_KEY" |
+              awk -F: '$1 == "fpr" { print $10 }'
+          )"
+          printf '%s\n' "$KEY_FINGERPRINTS" | grep -Fxq "$SAMBA_RELEASE_FINGERPRINT"
+          GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --import "$BASE_PUBLIC_KEY"
+
+          # Samba signs the uncompressed tar archive, not the gzip container.
+          gzip -dc "$BASE_ARCHIVE" > "$BASE_TAR"
+          VERIFY_STATUS="$(
+            GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --status-fd 1 \
+              --verify "$BASE_SIGNATURE" "$BASE_TAR" \
+              2>"${SAMBA_WORKDIR}/baseline-signature.log"
+          )"
+          printf '%s\n' "$VERIFY_STATUS" |
+            grep -Fq "[GNUPG:] VALIDSIG ${SAMBA_RELEASE_FINGERPRINT} "
+          tar -xf "$BASE_TAR" -C "${SAMBA_WORKDIR}"
 
           BASE_DIR="${SAMBA_WORKDIR}/samba-${SAMBA_VERSION}"
           cd "${BASE_DIR}"
@@ -169,7 +214,7 @@ jobs:
             cat /tmp/samba-configure-baseline.log || true
             exit 1
           fi
-          if ! make -j2 bin/smbclient >/tmp/samba-make-baseline.log 2>&1; then
+          if ! make -j2 bin/smbclient bin/smbd >/tmp/samba-make-baseline.log 2>&1; then
             cat /tmp/samba-make-baseline.log || true
             if ! make -j2 >/tmp/samba-make-baseline.log 2>&1; then
               cat /tmp/samba-make-baseline.log || true
@@ -181,10 +226,19 @@ jobs:
           if [ ! -x "${BASE_BIN}" ] && [ -x "${BASE_DIR}/source3/bin/smbclient" ]; then
             BASE_BIN="${BASE_DIR}/source3/bin/smbclient"
           fi
+          BASE_SMBD="${BASE_DIR}/bin/smbd"
+          if [ ! -x "${BASE_SMBD}" ] && [ -x "${BASE_DIR}/source3/smbd/smbd" ]; then
+            BASE_SMBD="${BASE_DIR}/source3/smbd/smbd"
+          fi
           test -x "${BASE_BIN}"
+          test -x "${BASE_SMBD}"
 
           echo "base_dir=${BASE_DIR}" >> "$GITHUB_OUTPUT"
           echo "base_bin=${BASE_BIN}" >> "$GITHUB_OUTPUT"
+          echo "base_smbd=${BASE_SMBD}" >> "$GITHUB_OUTPUT"
+          echo "base_tar=${BASE_TAR}" >> "$GITHUB_OUTPUT"
+          echo "base_signature=${BASE_SIGNATURE}" >> "$GITHUB_OUTPUT"
+          echo "base_gnupghome=${BASE_GNUPGHOME}" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
       - name: Get Samba versions
@@ -221,6 +275,8 @@ jobs:
                   for match in re.findall(r"samba-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz", html)
               }
           )
+          if not current_parts or not versions or current_parts not in versions:
+              raise SystemExit("official stable index did not contain the pinned baseline release")
           next_versions = [version for version in versions if version > current_parts]
           print(".".join(map(str, next_versions[0])) if next_versions else "")
           PY
@@ -243,15 +299,16 @@ jobs:
           echo "Detected Samba version: ${VERSION}"
           echo "Detected latest stable release: ${LATEST}"
 
-      - name: Test 1 - Check smbclient binary exists
+      - name: Test 1 - Check smbclient and smbd binaries exist
         id: test1
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_BIN="${{ steps.install.outputs.base_bin }}"
+          BASE_SMBD="${{ steps.install.outputs.base_smbd }}"
 
-          if [ -x "${BASE_BIN}" ]; then
+          if [ -x "${BASE_BIN}" ] && [ -x "${BASE_SMBD}" ]; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             echo "status=failed" >> "$GITHUB_OUTPUT"
@@ -285,18 +342,34 @@ jobs:
           END_TIME=$(date +%s)
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
-      - name: Test 3 - Check help output
+      - name: Test 3 - Verify official source signature
         id: test3
         continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASE_BIN="${{ steps.install.outputs.base_bin }}"
+          BASE_TAR="${{ steps.install.outputs.base_tar }}"
+          BASE_SIGNATURE="${{ steps.install.outputs.base_signature }}"
+          BASE_GNUPGHOME="${{ steps.install.outputs.base_gnupghome }}"
+          SIGNATURE_LOG="$RUNNER_TEMP/samba-baseline-signature-test.log"
 
-          if "${BASE_BIN}" --help >/tmp/samba-help.txt 2>&1 && grep -Eqi "usage|smbclient|options" /tmp/samba-help.txt; then
+          KEY_FINGERPRINT="$(
+            GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --with-colons \
+              --fingerprint "$SAMBA_RELEASE_FINGERPRINT" |
+              awk -F: '$1 == "fpr" { print $10; exit }'
+          )"
+          VERIFY_STATUS=""
+          if [ "$KEY_FINGERPRINT" = "$SAMBA_RELEASE_FINGERPRINT" ] && \
+            VERIFY_STATUS="$(
+              GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --status-fd 1 \
+                --verify "$BASE_SIGNATURE" "$BASE_TAR" \
+                2>"$SIGNATURE_LOG"
+            )" && \
+            printf '%s\n' "$VERIFY_STATUS" |
+              grep -Fq "[GNUPG:] VALIDSIG ${SAMBA_RELEASE_FINGERPRINT} "; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/samba-help.txt || true
+            cat "$SIGNATURE_LOG" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -313,13 +386,18 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_BIN="${{ steps.install.outputs.base_bin }}"
+          BASE_SMBD="${{ steps.install.outputs.base_smbd }}"
           BASE_REAL_BIN="$(readlink -f "${BASE_BIN}" || echo "${BASE_BIN}")"
+          BASE_REAL_SMBD="$(readlink -f "${BASE_SMBD}" || echo "${BASE_SMBD}")"
 
-          if [ "$(uname -m)" = "aarch64" ] && file -L "${BASE_REAL_BIN}" | grep -qi "ARM aarch64"; then
+          if [ "$(uname -m)" = "aarch64" ] && \
+            file -L "${BASE_REAL_BIN}" | grep -qi "ARM aarch64" && \
+            file -L "${BASE_REAL_SMBD}" | grep -qi "ARM aarch64"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             uname -m
             file -L "${BASE_REAL_BIN}" || true
+            file -L "${BASE_REAL_SMBD}" || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -336,12 +414,164 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_BIN="${{ steps.install.outputs.base_bin }}"
+          BASE_SMBD="${{ steps.install.outputs.base_smbd }}"
 
-          timeout 20s "${BASE_BIN}" -L localhost -N >/tmp/samba-functional.txt 2>&1 || true
-          if grep -Eqi "NT_STATUS|Connection to localhost failed|Unable to connect|do_connect" /tmp/samba-functional.txt; then
+          run_protocol_probe() (
+            set -uo pipefail
+            local client_bin="$1"
+            local server_bin="$2"
+            local probe_label="$3"
+            local smb_port="$4"
+            local probe_root
+            local smbd_pid=""
+
+            probe_root="$(mktemp -d "$RUNNER_TEMP/samba-${probe_label}-probe.XXXXXX")"
+            local share_dir="$probe_root/share"
+            local state_dir="$probe_root/state"
+            local config_file="$probe_root/smb.conf"
+            local smbd_log="$probe_root/smbd.log"
+            local list_output="$probe_root/list.txt"
+            local get_output="$probe_root/get.txt"
+            local downloaded_marker="$probe_root/downloaded-marker.txt"
+            local marker_value="samba-${probe_label}-protocol-ok"
+
+            # shellcheck disable=SC2329  # Invoked indirectly by trap.
+            cleanup_probe() {
+              if [ -n "$smbd_pid" ]; then
+                if kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                  kill -TERM -- "-$smbd_pid" 2>/dev/null || true
+                  for _ in $(seq 1 20); do
+                    if ! kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                      break
+                    fi
+                    sleep 0.25
+                  done
+                  if kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                    kill -KILL -- "-$smbd_pid" 2>/dev/null || true
+                  fi
+                fi
+                wait "$smbd_pid" 2>/dev/null || true
+              fi
+              rm -rf -- "$probe_root"
+            }
+            cleanup_probe_success() {
+              if [ -z "$smbd_pid" ] || ! kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                return 1
+              fi
+              if ! kill -TERM -- "-$smbd_pid" 2>/dev/null; then
+                return 1
+              fi
+              for _ in $(seq 1 20); do
+                if ! kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.25
+              done
+              if kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                kill -KILL -- "-$smbd_pid" 2>/dev/null || true
+                return 1
+              fi
+              wait "$smbd_pid" 2>/dev/null || true
+              if kill -0 "$smbd_pid" 2>/dev/null; then
+                return 1
+              fi
+              smbd_pid=""
+              rm -rf -- "$probe_root" || return 1
+              if [ -e "$probe_root" ]; then
+                return 1
+              fi
+              trap - EXIT INT TERM
+            }
+            trap cleanup_probe EXIT INT TERM
+
+            mkdir -p \
+              "$share_dir" \
+              "$state_dir/cache" \
+              "$state_dir/lock" \
+              "$state_dir/ncalrpc" \
+              "$state_dir/pid" \
+              "$state_dir/private" \
+              "$state_dir/state" || return 1
+            chmod 0755 "$probe_root" "$share_dir" || return 1
+            printf '%s\n' "$marker_value" > "$share_dir/marker.txt" || return 1
+            chmod 0444 "$share_dir/marker.txt" || return 1
+
+            cat > "$config_file" <<EOF
+          [global]
+              server role = standalone server
+              workgroup = WORKGROUP
+              security = user
+              map to guest = Bad User
+              guest account = $(id -un)
+              interfaces = 127.0.0.1
+              bind interfaces only = yes
+              smb ports = $smb_port
+              disable netbios = yes
+              server min protocol = SMB2
+              server max protocol = SMB3
+              pid directory = $state_dir/pid
+              lock directory = $state_dir/lock
+              state directory = $state_dir/state
+              cache directory = $state_dir/cache
+              private dir = $state_dir/private
+              ncalrpc dir = $state_dir/ncalrpc
+              log file = $smbd_log
+              logging = file
+              load printers = no
+              printcap name = /dev/null
+              disable spoolss = yes
+
+          [smoke]
+              path = $share_dir
+              guest ok = yes
+              guest only = yes
+              read only = yes
+              browseable = yes
+          EOF
+
+            setsid "$server_bin" -F --no-process-group -s "$config_file" --debug-stdout \
+              >"$smbd_log" 2>&1 &
+            smbd_pid=$!
+
+            local ready=false
+            for _ in $(seq 1 30); do
+              if ! kill -0 "$smbd_pid" 2>/dev/null; then
+                cat "$smbd_log" || true
+                return 1
+              fi
+              if timeout 10s "$client_bin" -L 127.0.0.1 -I 127.0.0.1 \
+                -p "$smb_port" -U "samba-smoke%" -m SMB3 \
+                >"$list_output" 2>&1; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "$ready" != true ] || \
+              ! grep -Eq '^[[:space:]]*smoke[[:space:]]+Disk' "$list_output"; then
+              cat "$smbd_log" "$list_output" || true
+              return 1
+            fi
+
+            if ! timeout 20s "$client_bin" "//127.0.0.1/smoke" -I 127.0.0.1 \
+              -p "$smb_port" -U "samba-smoke%" -m SMB3 \
+              -c "get marker.txt $downloaded_marker" >"$get_output" 2>&1; then
+              cat "$smbd_log" "$get_output" || true
+              return 1
+            fi
+            if ! cmp -s "$share_dir/marker.txt" "$downloaded_marker"; then
+              cat "$smbd_log" "$get_output" || true
+              return 1
+            fi
+            if ! cleanup_probe_success; then
+              return 1
+            fi
+          )
+
+          if run_protocol_probe "$BASE_BIN" "$BASE_SMBD" baseline 14445; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
-            cat /tmp/samba-functional.txt || true
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -352,13 +582,16 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
+        if: always()
         id: test6
         run: |
           set -uo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
           LATEST="${{ steps.version.outputs.latest }}"
           LOOKUP_STATUS="${{ steps.version.outputs.lookup_status || 'failed' }}"
+          INSTALL_OUTCOME="${{ steps.install.outcome }}"
+          VERSION_OUTCOME="${{ steps.version.outcome }}"
           REGRESSION_WORKDIR="/tmp/samba-regression"
           STATUS="failed"
           DECISION="next_lookup_failed"
@@ -366,26 +599,228 @@ jobs:
           REGRESSION_RESULT="Next version lookup failed on Arm64"
           COMPARISON="Current pinned Samba version ${CURRENT} passed smoke tests in this run, but the next stable release could not be resolved from the official Samba stable archive for Arm64 install validation."
 
-          if [ "$LOOKUP_STATUS" = "no_newer_stable" ]; then
+          BASELINE_FAILED=false
+          BASELINE_DECISION="baseline_failed"
+          if [ "$INSTALL_OUTCOME" != "success" ]; then
+            BASELINE_FAILED=true
+            BASELINE_DECISION="baseline_install_failed"
+          elif [ "$VERSION_OUTCOME" != "success" ]; then
+            BASELINE_FAILED=true
+          fi
+          for BASELINE_STATUS in \
+            "${{ steps.test1.outputs.status || 'failed' }}" \
+            "${{ steps.test2.outputs.status || 'failed' }}" \
+            "${{ steps.test3.outputs.status || 'failed' }}" \
+            "${{ steps.test4.outputs.status || 'failed' }}" \
+            "${{ steps.test5.outputs.status || 'failed' }}"; do
+            if [ "$BASELINE_STATUS" != "passed" ]; then
+              BASELINE_FAILED=true
+            fi
+          done
+
+          run_protocol_probe() (
+            set -uo pipefail
+            local client_bin="$1"
+            local server_bin="$2"
+            local probe_label="$3"
+            local smb_port="$4"
+            local probe_root
+            local smbd_pid=""
+
+            probe_root="$(mktemp -d "$RUNNER_TEMP/samba-${probe_label}-probe.XXXXXX")"
+            local share_dir="$probe_root/share"
+            local state_dir="$probe_root/state"
+            local config_file="$probe_root/smb.conf"
+            local smbd_log="$probe_root/smbd.log"
+            local list_output="$probe_root/list.txt"
+            local get_output="$probe_root/get.txt"
+            local downloaded_marker="$probe_root/downloaded-marker.txt"
+            local marker_value="samba-${probe_label}-protocol-ok"
+
+            # shellcheck disable=SC2329  # Invoked indirectly by trap.
+            cleanup_probe() {
+              if [ -n "$smbd_pid" ]; then
+                if kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                  kill -TERM -- "-$smbd_pid" 2>/dev/null || true
+                  for _ in $(seq 1 20); do
+                    if ! kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                      break
+                    fi
+                    sleep 0.25
+                  done
+                  if kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                    kill -KILL -- "-$smbd_pid" 2>/dev/null || true
+                  fi
+                fi
+                wait "$smbd_pid" 2>/dev/null || true
+              fi
+              rm -rf -- "$probe_root"
+            }
+            cleanup_probe_success() {
+              if [ -z "$smbd_pid" ] || ! kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                return 1
+              fi
+              if ! kill -TERM -- "-$smbd_pid" 2>/dev/null; then
+                return 1
+              fi
+              for _ in $(seq 1 20); do
+                if ! kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.25
+              done
+              if kill -0 -- "-$smbd_pid" 2>/dev/null; then
+                kill -KILL -- "-$smbd_pid" 2>/dev/null || true
+                return 1
+              fi
+              wait "$smbd_pid" 2>/dev/null || true
+              if kill -0 "$smbd_pid" 2>/dev/null; then
+                return 1
+              fi
+              smbd_pid=""
+              rm -rf -- "$probe_root" || return 1
+              if [ -e "$probe_root" ]; then
+                return 1
+              fi
+              trap - EXIT INT TERM
+            }
+            trap cleanup_probe EXIT INT TERM
+
+            mkdir -p \
+              "$share_dir" \
+              "$state_dir/cache" \
+              "$state_dir/lock" \
+              "$state_dir/ncalrpc" \
+              "$state_dir/pid" \
+              "$state_dir/private" \
+              "$state_dir/state" || return 1
+            chmod 0755 "$probe_root" "$share_dir" || return 1
+            printf '%s\n' "$marker_value" > "$share_dir/marker.txt" || return 1
+            chmod 0444 "$share_dir/marker.txt" || return 1
+
+            cat > "$config_file" <<EOF
+          [global]
+              server role = standalone server
+              workgroup = WORKGROUP
+              security = user
+              map to guest = Bad User
+              guest account = $(id -un)
+              interfaces = 127.0.0.1
+              bind interfaces only = yes
+              smb ports = $smb_port
+              disable netbios = yes
+              server min protocol = SMB2
+              server max protocol = SMB3
+              pid directory = $state_dir/pid
+              lock directory = $state_dir/lock
+              state directory = $state_dir/state
+              cache directory = $state_dir/cache
+              private dir = $state_dir/private
+              ncalrpc dir = $state_dir/ncalrpc
+              log file = $smbd_log
+              logging = file
+              load printers = no
+              printcap name = /dev/null
+              disable spoolss = yes
+
+          [smoke]
+              path = $share_dir
+              guest ok = yes
+              guest only = yes
+              read only = yes
+              browseable = yes
+          EOF
+
+            setsid "$server_bin" -F --no-process-group -s "$config_file" --debug-stdout \
+              >"$smbd_log" 2>&1 &
+            smbd_pid=$!
+
+            local ready=false
+            for _ in $(seq 1 30); do
+              if ! kill -0 "$smbd_pid" 2>/dev/null; then
+                cat "$smbd_log" || true
+                return 1
+              fi
+              if timeout 10s "$client_bin" -L 127.0.0.1 -I 127.0.0.1 \
+                -p "$smb_port" -U "samba-smoke%" -m SMB3 \
+                >"$list_output" 2>&1; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "$ready" != true ] || \
+              ! grep -Eq '^[[:space:]]*smoke[[:space:]]+Disk' "$list_output"; then
+              cat "$smbd_log" "$list_output" || true
+              return 1
+            fi
+
+            if ! timeout 20s "$client_bin" "//127.0.0.1/smoke" -I 127.0.0.1 \
+              -p "$smb_port" -U "samba-smoke%" -m SMB3 \
+              -c "get marker.txt $downloaded_marker" >"$get_output" 2>&1; then
+              cat "$smbd_log" "$get_output" || true
+              return 1
+            fi
+            if ! cmp -s "$share_dir/marker.txt" "$downloaded_marker"; then
+              cat "$smbd_log" "$get_output" || true
+              return 1
+            fi
+            if ! cleanup_probe_success; then
+              return 1
+            fi
+          )
+
+          if [ "$BASELINE_FAILED" = "true" ]; then
+            STATUS="skipped"
+            DECISION="$BASELINE_DECISION"
+            NEXT_INSTALLED="not_installed"
+            if [ "$DECISION" = "baseline_install_failed" ]; then
+              REGRESSION_RESULT="Regression validation skipped because baseline installation failed"
+              COMPARISON="Samba Test 6 did not evaluate a candidate because the pinned baseline source could not be installed and verified."
+            else
+              REGRESSION_RESULT="Regression validation skipped because a baseline test failed"
+              COMPARISON="Samba Test 6 did not evaluate a candidate because baseline version discovery or one or more strict checks in Tests 1-5 failed."
+            fi
+          elif [ "$LOOKUP_STATUS" = "no_newer_stable" ]; then
             STATUS="skipped"
             DECISION="no_newer_stable_available"
-            NEXT_INSTALLED="$CURRENT"
             REGRESSION_RESULT="No newer stable Samba release is available"
             COMPARISON="Current pinned Samba version ${CURRENT} passed smoke tests in this run and the official stable archive contains no newer stable release for Test 6."
           elif [ "$LOOKUP_STATUS" = "success" ] && [ -n "$LATEST" ]; then
             DECISION="next_install_failed"
             REGRESSION_RESULT="Next version install failed on Arm64"
-            COMPARISON="Current pinned Samba version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete the expected Arm64 source-build and bounded client smoke."
+            COMPARISON="Current pinned Samba version ${CURRENT} passed smoke tests in this run, but candidate version ${LATEST} did not complete signature verification, the Arm64 client/server build, and the isolated localhost SMB marker probe."
 
             rm -rf "$REGRESSION_WORKDIR"
             mkdir -p "$REGRESSION_WORKDIR"
             NEXT_ARCHIVE="$REGRESSION_WORKDIR/samba-${LATEST}.tar.gz"
+            NEXT_TAR="$REGRESSION_WORKDIR/samba-${LATEST}.tar"
+            NEXT_SIGNATURE="$REGRESSION_WORKDIR/samba-${LATEST}.tar.asc"
             NEXT_DIR="$REGRESSION_WORKDIR/samba-${LATEST}"
+            BASE_GNUPGHOME="${{ steps.install.outputs.base_gnupghome }}"
 
             if curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 900 \
               -o "$NEXT_ARCHIVE" \
               "https://download.samba.org/pub/samba/stable/samba-${LATEST}.tar.gz" && \
-              tar -xzf "$NEXT_ARCHIVE" -C "$REGRESSION_WORKDIR" && \
+              curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 180 \
+              -o "$NEXT_SIGNATURE" \
+              "https://download.samba.org/pub/samba/stable/samba-${LATEST}.tar.asc" && \
+              gzip -dc "$NEXT_ARCHIVE" > "$NEXT_TAR" && \
+              KEY_FINGERPRINT="$(
+                GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --with-colons \
+                  --fingerprint "$SAMBA_RELEASE_FINGERPRINT" |
+                  awk -F: '$1 == "fpr" { print $10; exit }'
+              )" && \
+              [ "$KEY_FINGERPRINT" = "$SAMBA_RELEASE_FINGERPRINT" ] && \
+              VERIFY_STATUS="$(
+                GNUPGHOME="$BASE_GNUPGHOME" gpg --batch --status-fd 1 \
+                  --verify "$NEXT_SIGNATURE" "$NEXT_TAR" \
+                  2>/tmp/samba-signature-next.log
+              )" && \
+              printf '%s\n' "$VERIFY_STATUS" |
+                grep -Fq "[GNUPG:] VALIDSIG ${SAMBA_RELEASE_FINGERPRINT} " && \
+              tar -xf "$NEXT_TAR" -C "$REGRESSION_WORKDIR" && \
               cd "$NEXT_DIR"; then
               CONFIGURED=false
               BUILT=false
@@ -396,7 +831,7 @@ jobs:
               fi
 
               if [ "$CONFIGURED" = "true" ]; then
-                if make -j2 bin/smbclient >/tmp/samba-make-next.log 2>&1; then
+                if make -j2 bin/smbclient bin/smbd >/tmp/samba-make-next.log 2>&1; then
                   BUILT=true
                 else
                   cat /tmp/samba-make-next.log || true
@@ -412,19 +847,26 @@ jobs:
               if [ ! -x "$NEXT_BIN" ] && [ -x "$NEXT_DIR/source3/bin/smbclient" ]; then
                 NEXT_BIN="$NEXT_DIR/source3/bin/smbclient"
               fi
+              NEXT_SMBD="$NEXT_DIR/bin/smbd"
+              if [ ! -x "$NEXT_SMBD" ] && [ -x "$NEXT_DIR/source3/smbd/smbd" ]; then
+                NEXT_SMBD="$NEXT_DIR/source3/smbd/smbd"
+              fi
+              NEXT_REAL_BIN="$(readlink -f "$NEXT_BIN" || echo "$NEXT_BIN")"
+              NEXT_REAL_SMBD="$(readlink -f "$NEXT_SMBD" || echo "$NEXT_SMBD")"
 
-              if [ "$BUILT" = "true" ] && [ -x "$NEXT_BIN" ]; then
+              if [ "$BUILT" = "true" ] && \
+                [ -x "$NEXT_BIN" ] && [ -x "$NEXT_SMBD" ] && \
+                [ "$(uname -m)" = "aarch64" ] && \
+                file -L "$NEXT_REAL_BIN" | grep -qi "ARM aarch64" && \
+                file -L "$NEXT_REAL_SMBD" | grep -qi "ARM aarch64"; then
                 NEXT_VERSION=$("$NEXT_BIN" --version 2>&1 | awk 'NR==1 {print $2}' || true)
                 NEXT_INSTALLED="${NEXT_VERSION:-not_installed}"
-                timeout 20s "$NEXT_BIN" -L localhost -N >/tmp/samba-next-functional.txt 2>&1 || true
                 if [ "$NEXT_VERSION" = "$LATEST" ] && \
-                  grep -Eqi "NT_STATUS|Connection to localhost failed|Unable to connect|do_connect" /tmp/samba-next-functional.txt; then
+                  run_protocol_probe "$NEXT_BIN" "$NEXT_SMBD" candidate 14446; then
                   STATUS="passed"
                   DECISION="next_install_validated"
                   REGRESSION_RESULT="Next version installed successfully on Arm64"
-                  COMPARISON="Current pinned Samba version ${CURRENT} passed smoke tests in this run. Regression validation rebuilt candidate version ${LATEST} on Arm64, the candidate binary reported version ${NEXT_VERSION}, and the bounded localhost client-connection smoke completed successfully."
-                else
-                  cat /tmp/samba-next-functional.txt || true
+                  COMPARISON="Current pinned Samba version ${CURRENT} passed smoke tests in this run. Regression validation verified, rebuilt, and ran candidate version ${LATEST} on Arm64; its exact smbclient listed the isolated guest share and read the marker from its exact smbd over localhost SMB."
                 fi
               fi
             fi
@@ -499,7 +941,11 @@ jobs:
               ;;
             skipped)
               SKIPPED=$((SKIPPED + 1))
-              if [ "$TEST6_DECISION" != "no_newer_stable_available" ]; then
+              if { [ "$TEST6_DECISION" = "baseline_failed" ] || \
+                   [ "$TEST6_DECISION" = "baseline_install_failed" ]; } && \
+                [ "$CORE_FAILED" -gt 0 ]; then
+                :
+              elif [ "$TEST6_DECISION" != "no_newer_stable_available" ]; then
                 TEST6_FAILED=1
               fi
               ;;
@@ -546,12 +992,12 @@ jobs:
             echo "- **Runner:** ubuntu-24.04 (arm64)"
             echo ""
             echo "### Test Details"
-            echo "1. Test 1 - Check smbclient binary exists: ${{ steps.test1.outputs.status || 'skipped' }}"
-            echo "2. Test 2 - Check exact version output: ${{ steps.test2.outputs.status || 'skipped' }}"
-            echo "3. Test 3 - Check help output: ${{ steps.test3.outputs.status || 'skipped' }}"
-            echo "4. Test 4 - Architecture verification: ${{ steps.test4.outputs.status || 'skipped' }}"
-            echo "5. Test 5 - Functional validation: ${{ steps.test5.outputs.status || 'skipped' }}"
-            echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'skipped' }}"
+            echo "1. Test 1 - Check smbclient and smbd binaries exist: ${{ steps.test1.outputs.status || 'failed' }}"
+            echo "2. Test 2 - Check exact version output: ${{ steps.test2.outputs.status || 'failed' }}"
+            echo "3. Test 3 - Verify official source signature: ${{ steps.test3.outputs.status || 'failed' }}"
+            echo "4. Test 4 - Architecture verification: ${{ steps.test4.outputs.status || 'failed' }}"
+            echo "5. Test 5 - Functional validation: ${{ steps.test5.outputs.status || 'failed' }}"
+            echo "6. Regression Validation: ${{ steps.test6.outputs.status || 'failed' }}"
             echo ""
             echo "### Regression Validation (Next Version Install)"
             echo "- **Current version tested in Tests 1-5:** ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
