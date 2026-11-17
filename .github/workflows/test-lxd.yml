@@ -79,6 +79,7 @@ on:
 jobs:
   test-lxd:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
@@ -86,13 +87,13 @@ jobs:
       package_version: ${{ steps.version.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
-      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '1' }}
       tests_passed: ${{ steps.summary.outputs.passed || '0' }}
-      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
-      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '1' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '5' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'baseline_install_failed' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
@@ -112,42 +113,57 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=lxd" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/lxd" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=lxd"
+            echo "dashboard_link=/opensource_packages/lxd"
+          } >> "$GITHUB_OUTPUT"
       - name: Install LXD
         id: install
+        timeout-minutes: 25
+        continue-on-error: true
         run: |
           set -euo pipefail
           clear_inflight_lxd_change() {
             local change_id=""
-            change_id="$(sudo snap changes --abs-time 2>/dev/null | awk 'NR > 1 && /lxd/ && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
+            change_id="$(timeout --kill-after=5s 30s sudo snap changes --abs-time 2>/dev/null | awk 'NR > 1 && /lxd/ && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
             if [ -n "${change_id}" ]; then
-              echo "Found in-flight LXD snap change ${change_id}; waiting briefly before aborting if needed."
-              timeout 120 sudo snap watch "${change_id}" >/dev/null 2>&1 || sudo snap abort "${change_id}" >/dev/null 2>&1 || true
+              echo "Found in-flight LXD snap change ${change_id}; waiting for snapd to finish it."
+              if ! timeout --kill-after=5s 120s sudo snap watch "${change_id}"; then
+                timeout --kill-after=5s 30s sudo snap change "${change_id}" || true
+                timeout --kill-after=5s 30s sudo snap abort "${change_id}" >/dev/null 2>&1 || true
+              fi
             fi
           }
 
           echo "Installing LXD via Snap..."
-          sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
-          sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+          timeout --kill-after=5s 30s sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
+          timeout --kill-after=5s 120s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
           install_ok=0
           for attempt in 1 2 3; do
             echo "LXD install attempt ${attempt}/3"
-            if snap list lxd >/dev/null 2>&1; then
+            if timeout --kill-after=5s 30s snap list lxd >/dev/null 2>&1; then
               install_ok=1
               break
             fi
             clear_inflight_lxd_change
-            if timeout 600 sudo snap install lxd --channel=latest/stable; then
+            if timeout --kill-after=5s 30s snap list lxd >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            if timeout --kill-after=10s 600s sudo snap install lxd --channel=latest/stable; then
               install_ok=1
               break
             fi
             echo "snap install lxd attempt ${attempt} did not complete cleanly"
             clear_inflight_lxd_change
-            sudo snap remove --purge lxd >/dev/null 2>&1 || true
-            sudo systemctl restart snapd.socket snapd.service >/dev/null 2>&1 || true
-            sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+            if timeout --kill-after=5s 30s snap list lxd >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            timeout --kill-after=5s 60s sudo snap remove --purge lxd >/dev/null 2>&1 || true
+            timeout --kill-after=5s 30s sudo systemctl restart snapd.socket snapd.service >/dev/null 2>&1 || true
+            timeout --kill-after=5s 120s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
             sleep 15
           done
           if [ "$install_ok" -ne 1 ]; then
@@ -161,195 +177,210 @@ jobs:
       
       - name: Get LXD version
         id: version
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           VERSION=$(lxd --version)
-          VERSION=$(echo "$VERSION" | sed 's/[",]//g' | tr -d '\\' | sed 's/\x1b\[[0-9;]*m//g')
+          VERSION=$(printf '%s\n' "$VERSION" | sed 's/[",]//g' | tr -d '\134' | sed 's/\x1b\[[0-9;]*m//g')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected LXD version: $VERSION"
       
       - name: Test 1 - Check Binaries Exist
         id: test1
-        continue-on-error: true
+        if: always()
         run: |
           START_TIME=$(date +%s)
-          
-          if command -v lxd > /dev/null 2>&1 && command -v lxc > /dev/null 2>&1; then
+
+          STATUS="failed"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" = "success" ] \
+            && command -v lxd > /dev/null 2>&1 \
+            && command -v lxc > /dev/null 2>&1; then
             echo "✓ lxd and lxc binaries found"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            STATUS="passed"
           else
-            echo "✗ lxd or lxc binary missing"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+            echo "✗ LXD installation or binary verification failed"
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "passed" ] || exit 1
       
       - name: Test 2 - Check Version
         id: test2
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           START_TIME=$(date +%s)
-          
-          if lxd --version > /dev/null 2>&1; then
+
+          STATUS="failed"
+          if [ -n "${{ steps.version.outputs.version }}" ] && lxd --version > /dev/null 2>&1; then
              echo "✓ lxd version works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+             STATUS="passed"
           else
              echo "✗ lxd version failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "passed" ] || exit 1
 
       - name: Test 3 - Initialize (Dry Run)
         id: test3
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           START_TIME=$(date +%s)
-          
+
+          STATUS="failed"
           if lxd init --help > /dev/null 2>&1; then
              echo "✓ lxd init help works"
-             echo "status=passed" >> $GITHUB_OUTPUT
+             STATUS="passed"
           else
              echo "✗ lxd init help failed"
-             echo "status=failed" >> $GITHUB_OUTPUT
-             exit 1
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "passed" ] || exit 1
       
       
       - name: Test 4 - Architecture Verification
         id: test4
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           START_TIME=$(date +%s)
-          
-          echo "Checking system architecture..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            echo "✓ System architecture is ARM64 ($ARCH)"
-            echo "status=passed" >> $GITHUB_OUTPUT
-          else
-            echo "✗ System architecture is NOT ARM64 ($ARCH)"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+
+          echo "Checking installed LXD payload architecture..."
+          SNAP_MOUNT="$(readlink -f /snap/lxd/current)"
+          [ -d "$SNAP_MOUNT" ]
+          STATUS="passed"
+          for BINARY in lxd lxc; do
+            MATCHED=0
+            while IFS= read -r PAYLOAD; do
+              echo "Inspecting $PAYLOAD"
+              if readelf -h "$PAYLOAD" 2>/dev/null | grep -Eq 'Machine:[[:space:]]+AArch64'; then
+                MATCHED=1
+                break
+              fi
+            done < <(find "$SNAP_MOUNT" -type f -name "$BINARY" -perm /111 -print | LC_ALL=C sort)
+            if [ "$MATCHED" -ne 1 ]; then
+              echo "✗ No installed AArch64 ELF payload found for $BINARY"
+              STATUS="failed"
+            fi
+          done
+          if [ "$STATUS" = "passed" ]; then
+            echo "✓ Installed LXD and LXC payloads are AArch64 ELF executables"
           fi
-          
+
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "passed" ] || exit 1
 
       - name: Test 5 - Functional Validation
         id: test5
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           START_TIME=$(date +%s)
 
+          STATUS="failed"
           if lxc remote list > /dev/null 2>&1; then
             echo "✓ lxc remote list executed successfully"
-            echo "status=passed" >> $GITHUB_OUTPUT
+            STATUS="passed"
           else
             echo "✗ lxc remote list failed"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
           fi
 
           END_TIME=$(date +%s)
-          echo "duration=$((END_TIME - START_TIME))" >> $GITHUB_OUTPUT
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+          [ "$STATUS" = "passed" ] || exit 1
 
       - name: Regression applicability - package manager installed
         id: test6
+        if: always()
         run: |
           set -euo pipefail
-          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-          echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-          echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
-          echo "status=skipped" >> "$GITHUB_OUTPUT"
-          echo "duration=0" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.install.outputs.install_status || 'failed' }}" != "success" ]; then
+            {
+              echo "current_version=unknown"
+              echo "latest_version=not_checked"
+              echo "next_installed_version=not_installed"
+              echo "decision=baseline_install_failed"
+              echo "regression_result=Regression validation not run because baseline LXD installation failed"
+              echo "comparison=The baseline package must install successfully before any next-version comparison is trustworthy."
+              echo "status=skipped"
+              echo "duration=0"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      - name: Calculate test summary
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          {
+            echo "current_version=$CURRENT"
+            echo "latest_version=not_applicable"
+            echo "next_installed_version=not_applicable"
+          } >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.test1.outcome }}" = "success" ] && [ "${{ steps.test1.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test2.outcome }}" = "success" ] && [ "${{ steps.test2.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test3.outcome }}" = "success" ] && [ "${{ steps.test3.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test4.outcome }}" = "success" ] && [ "${{ steps.test4.outputs.status }}" = "passed" ] && \
+             [ "${{ steps.test5.outcome }}" = "success" ] && [ "${{ steps.test5.outputs.status }}" = "passed" ]; then
+            {
+              echo "decision=not_applicable_package_manager"
+              echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5"
+              echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy."
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "decision=baseline_failed"
+              echo "regression_result=Regression validation not run because one or more baseline LXD checks failed"
+              echo "comparison=All five baseline checks must pass before the package-manager regression policy can be applied."
+            } >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "status=skipped"
+            echo "duration=0"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit package result
         if: always()
         id: summary
-        run: |
-          PASSED=0
-          FAILED=0
-          TOTAL_DURATION=0
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_slug: lxd
+          package_name: Canonical LXD
+          version: ${{ steps.version.outputs.version || 'unknown' }}
+          install_status: ${{ steps.install.outputs.install_status || 'failed' }}
+          test1_label: Test 1 - Check LXD binaries exist
+          test2_label: Test 2 - Check LXD version command
+          test3_label: Test 3 - Initialize dry run
+          test4_label: Test 4 - Architecture Verification
+          test5_label: Test 5 - Functional Validation
+          test1_status: ${{ steps.test1.outcome || 'skipped' }}
+          test2_status: ${{ steps.test2.outcome || 'skipped' }}
+          test3_status: ${{ steps.test3.outcome || 'skipped' }}
+          test4_status: ${{ steps.test4.outcome || 'skipped' }}
+          test5_status: ${{ steps.test5.outcome || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
 
-          # Check Binaries Exist
-          if [ "${{ steps.test1.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test1.outputs.duration || 0 }}))
-
-          # Check Version
-          if [ "${{ steps.test2.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test2.outputs.duration || 0 }}))
-
-          # Initialize (Dry Run)
-          if [ "${{ steps.test3.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test3.outputs.duration || 0 }}))
-
-          # Architecture Verification
-          if [ "${{ steps.test4.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test4.outputs.duration || 0 }}))
-
-          # Functional Validation
-          if [ "${{ steps.test5.outputs.status }}" == "passed" ]; then
-            PASSED=$((PASSED + 1))
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test5.outputs.duration || 0 }}))
-
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "duration=$TOTAL_DURATION" >> $GITHUB_OUTPUT
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> $GITHUB_OUTPUT
-            echo "badge_status=passing" >> $GITHUB_OUTPUT
-          else
-            echo "overall_status=failure" >> $GITHUB_OUTPUT
-            echo "badge_status=failing" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-      - name: Create test summary
+      - name: Enforce failure status
         if: always()
         run: |
-          echo "## LXD Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check Binaries Exist: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Check Version: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Initialize (Dry Run): ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Architecture Verification: ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Functional Validation: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi

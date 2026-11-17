@@ -77,6 +77,7 @@ on:
 jobs:
   test-multipass:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
     outputs:
       contract_version: "2.0"
       package_slug: ${{ steps.metadata.outputs.package_slug }}
@@ -84,13 +85,13 @@ jobs:
       package_version: ${{ steps.version.outputs.version || 'unknown' }}
       run_status: ${{ steps.summary.outputs.overall_status || 'failure' }}
       badge_status: ${{ steps.summary.outputs.badge_status || 'failing' }}
-      core_failed: ${{ steps.summary.outputs.core_failed || '0' }}
+      core_failed: ${{ steps.summary.outputs.core_failed || '1' }}
       tests_passed: ${{ steps.summary.outputs.passed || '0' }}
-      tests_failed: ${{ steps.summary.outputs.failed || '0' }}
-      tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
+      tests_failed: ${{ steps.summary.outputs.failed || '1' }}
+      tests_skipped: ${{ steps.summary.outputs.skipped || '5' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
       regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'baseline_install_failed' }}
       regression_result: ${{ steps.test6.outputs.regression_result || '' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
@@ -110,35 +111,84 @@ jobs:
       - name: Set test metadata
         id: metadata
         run: |
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "package_slug=multipass" >> "$GITHUB_OUTPUT"
-          echo "dashboard_link=/opensource_packages/multipass" >> "$GITHUB_OUTPUT"
+          {
+            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "package_slug=multipass"
+            echo "dashboard_link=/opensource_packages/multipass"
+          } >> "$GITHUB_OUTPUT"
       - name: Install Multipass
         id: install
-        timeout-minutes: 8
+        timeout-minutes: 15
+        continue-on-error: true
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           set -euo pipefail
-          finish() {
-            local RC="$1"
-            trap - EXIT
-            if [ "$RC" -eq 0 ]; then
-              echo "install_status=success" >> "$GITHUB_OUTPUT"
-            else
-              echo "install_status=failed" >> "$GITHUB_OUTPUT"
+          clear_inflight_change() {
+            local change_id=""
+            change_id="$(timeout --kill-after=5s 30s sudo snap changes --abs-time 2>/dev/null | awk 'NR > 1 && /multipass/ && $2 != "Done" && $2 != "Error" && $2 != "Undone" { print $1; exit }' || true)"
+            if [ -n "$change_id" ]; then
+              echo "Found in-flight Multipass change ${change_id}; waiting for snapd to finish it."
+              if ! timeout --kill-after=5s 120s sudo snap watch "$change_id"; then
+                timeout --kill-after=5s 30s sudo snap change "$change_id" 2>&1 | tee -a multipass-install.log || true
+                timeout --kill-after=5s 30s sudo snap abort "$change_id" >/dev/null 2>&1 || true
+              fi
             fi
-            exit "$RC"
           }
-          trap 'finish "$?"' EXIT
+
           # This service belongs to the disposable hosted VM, never a shared host.
           [ "$RUNNER_ENVIRONMENT" = github-hosted ]
           [ "$(uname -m)" = aarch64 ]
-          timeout --kill-after=5s 300s sudo snap install multipass
-          timeout --kill-after=5s 30s sudo systemctl start snap.multipass.multipassd.service
+          timeout --kill-after=5s 30s sudo systemctl start snapd.socket snapd.service >/dev/null 2>&1 || true
+          timeout --kill-after=5s 120s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+
+          : > multipass-install.log
+          install_ok=0
+          for attempt in 1 2 3; do
+            echo "Multipass install attempt ${attempt}/3"
+            if timeout --kill-after=5s 30s snap list multipass >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            clear_inflight_change
+            if timeout --kill-after=5s 30s snap list multipass >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            if timeout --kill-after=5s 240s sudo snap install multipass 2>&1 | tee -a multipass-install.log; then
+              install_ok=1
+              break
+            fi
+            clear_inflight_change
+            if timeout --kill-after=5s 30s snap list multipass >/dev/null 2>&1; then
+              install_ok=1
+              break
+            fi
+            timeout --kill-after=5s 60s sudo snap remove --purge multipass >/dev/null 2>&1 || true
+            timeout --kill-after=5s 30s sudo systemctl restart snapd.socket snapd.service >/dev/null 2>&1 || true
+            timeout --kill-after=5s 120s sudo snap wait system seed.loaded >/dev/null 2>&1 || true
+            sleep 15
+          done
+
+          if [ "$install_ok" -ne 1 ]; then
+            failure_kind=install_failed
+            if grep -Eqi 'api\.snapcraft\.io|connection refused|timed out|timeout exceeded|Client\.Timeout|cannot communicate with server' multipass-install.log; then
+              failure_kind=snap_store_unavailable
+            fi
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "failure_kind=$failure_kind" >> "$GITHUB_OUTPUT"
+            echo "Multipass installation failed after three bounded attempts: $failure_kind" >&2
+            exit 1
+          fi
+
+          if ! timeout --kill-after=5s 30s sudo systemctl start snap.multipass.multipassd.service; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "failure_kind=runtime_readiness_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           # A simple systemd service can be active before its root certificate exists.
           # shellcheck disable=SC2016
-          timeout --kill-after=5s 120s bash -eu -o pipefail -c '
+          if ! timeout --kill-after=5s 120s bash -eu -o pipefail -c '
             for ATTEMPT in {1..30}; do
               if timeout --kill-after=2s 5s sudo systemctl is-active --quiet snap.multipass.multipassd.service &&
                  timeout --kill-after=2s 5s sudo test -s /var/snap/multipass/common/data/multipassd/multipass_root_cert.pem; then
@@ -150,15 +200,21 @@ jobs:
             done
             echo "Multipass daemon/certificate readiness failed" >&2
             exit 1
-          '
-          finish 0
+          '; then
+            echo "install_status=failed" >> "$GITHUB_OUTPUT"
+            echo "failure_kind=runtime_readiness_failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "install_status=success" >> "$GITHUB_OUTPUT"
+          echo "failure_kind=none" >> "$GITHUB_OUTPUT"
 
       # ============================================================
       # CUSTOMIZE THIS: Get the package version
       # ============================================================
       - name: Get Multipass version
         id: version
-        if: always()
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -196,7 +252,6 @@ jobs:
       - name: Test 1 - Check multipass binary
         id: test1
         if: always()
-        continue-on-error: true
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -219,8 +274,7 @@ jobs:
 
       - name: Test 2 - Check version command
         id: test2
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -236,8 +290,6 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          [ "${{ steps.install.outcome }}" = success ]
-          [ "${{ steps.install.outputs.install_status }}" = success ]
           [ "${{ steps.version.outcome }}" = success ]
           RC=0
           timeout --kill-after=5s 30s multipass --version > multipass-version.txt 2> multipass-version-text.stderr || RC=$?
@@ -257,8 +309,7 @@ jobs:
 
       - name: Test 3 - Check CLI help
         id: test3
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -274,8 +325,6 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          [ "${{ steps.install.outcome }}" = success ]
-          [ "${{ steps.install.outputs.install_status }}" = success ]
           RC=0
           LC_ALL=C timeout --kill-after=5s 30s multipass --help > multipass-help.txt 2> multipass-help.stderr || RC=$?
           cat multipass-help.txt
@@ -289,8 +338,7 @@ jobs:
 
       - name: Test 4 - List available images (find)
         id: test4
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -306,8 +354,6 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          [ "${{ steps.install.outcome }}" = success ]
-          [ "${{ steps.install.outputs.install_status }}" = success ]
           # Query image metadata only; do not launch a VM or require nested virtualization.
           # Use the installing identity for the owned hosted daemon's restricted socket.
           RC=0
@@ -341,8 +387,7 @@ jobs:
 
       - name: Test 5 - Architecture Verification
         id: test5
-        if: always()
-        continue-on-error: true
+        if: ${{ always() && steps.install.outputs.install_status == 'success' }}
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
@@ -358,9 +403,18 @@ jobs:
             exit "$RC"
           }
           trap 'finish "$?"' EXIT
-          [ "${{ steps.install.outcome }}" = success ]
-          [ "${{ steps.install.outputs.install_status }}" = success ]
-          [ "$(uname -m)" = aarch64 ]
+          SNAP_MOUNT="$(readlink -f /snap/multipass/current)"
+          [ -d "$SNAP_MOUNT" ]
+          MATCHED=0
+          while IFS= read -r PAYLOAD; do
+            echo "Inspecting $PAYLOAD"
+            if readelf -h "$PAYLOAD" 2>/dev/null | grep -Eq 'Machine:[[:space:]]+AArch64'; then
+              MATCHED=1
+              break
+            fi
+          done < <(find "$SNAP_MOUNT" -type f -name multipass -perm /111 -print | LC_ALL=C sort)
+          [ "$MATCHED" -eq 1 ]
+          echo "Installed Multipass payload is an AArch64 ELF executable"
           finish 0
 
 
@@ -370,113 +424,76 @@ jobs:
         run: |
           set -euo pipefail
           CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
-          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "latest_version=not_applicable" >> "$GITHUB_OUTPUT"
-          echo "next_installed_version=not_applicable" >> "$GITHUB_OUTPUT"
+          {
+            echo "current_version=$CURRENT"
+            echo "latest_version=not_applicable"
+            echo "next_installed_version=not_applicable"
+          } >> "$GITHUB_OUTPUT"
           if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
-            echo "decision=baseline_install_failed" >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression skipped: Multipass installation or readiness failed." >> "$GITHUB_OUTPUT"
-            echo "comparison=No ready installed baseline is available for comparison." >> "$GITHUB_OUTPUT"
+            {
+              echo "decision=baseline_install_failed"
+              echo "status=skipped"
+              echo "regression_result=Regression skipped: Multipass installation or readiness failed."
+              echo "comparison=No ready installed baseline is available for comparison."
+            } >> "$GITHUB_OUTPUT"
           elif [ "${{ steps.version.outcome }}" = success ] && [ "$CURRENT" != unknown ] && \
                [ "${{ steps.test1.outcome }}" = success ] && [ "${{ steps.test1.outputs.status }}" = passed ] && \
                [ "${{ steps.test2.outcome }}" = success ] && [ "${{ steps.test2.outputs.status }}" = passed ] && \
                [ "${{ steps.test3.outcome }}" = success ] && [ "${{ steps.test3.outputs.status }}" = passed ] && \
                [ "${{ steps.test4.outcome }}" = success ] && [ "${{ steps.test4.outputs.status }}" = passed ] && \
                [ "${{ steps.test5.outcome }}" = success ] && [ "${{ steps.test5.outputs.status }}" = passed ]; then
-            echo "decision=not_applicable_package_manager" >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5" >> "$GITHUB_OUTPUT"
-            echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy." >> "$GITHUB_OUTPUT"
+            {
+              echo "decision=not_applicable_package_manager"
+              echo "status=skipped"
+              echo "regression_result=Regression validation not applicable: tested package installed via package manager in Tests 1-5"
+              echo "comparison=The tested package is installed via a package manager in Tests 1-5, so version-to-version regression validation is not shown under the current policy."
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
-            echo "status=skipped" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Regression skipped: Multipass baseline validation failed." >> "$GITHUB_OUTPUT"
-            echo "comparison=All five core checks must pass before a baseline can be compared." >> "$GITHUB_OUTPUT"
+            {
+              echo "decision=baseline_failed"
+              echo "status=skipped"
+              echo "regression_result=Regression skipped: Multipass baseline validation failed."
+              echo "comparison=All five core checks must pass before a baseline can be compared."
+            } >> "$GITHUB_OUTPUT"
           fi
           echo "duration=0" >> "$GITHUB_OUTPUT"
 
-      - name: Calculate test summary
+      - name: Emit package result
         if: always()
         id: summary
-        run: |
-          set -euo pipefail
-          PASSED=0
-          FAILED=0
-          SKIPPED=0
-          TOTAL_DURATION=0
-          check_core() {
-            local status="$1" outcome="$2" duration="$3"
-            if [[ "$duration" =~ ^[0-9]{1,6}$ ]]; then
-              TOTAL_DURATION=$((TOTAL_DURATION + 10#$duration))
-            else
-              status=failed
-            fi
-            if [ "$status" = passed ] && [ "$outcome" = success ]; then
-              PASSED=$((PASSED + 1))
-            else
-              FAILED=$((FAILED + 1))
-            fi
-          }
-          check_core "${{ steps.test1.outputs.status }}" "${{ steps.test1.outcome }}" "${{ steps.test1.outputs.duration || 0 }}"
-          check_core "${{ steps.test2.outputs.status }}" "${{ steps.test2.outcome }}" "${{ steps.test2.outputs.duration || 0 }}"
-          check_core "${{ steps.test3.outputs.status }}" "${{ steps.test3.outcome }}" "${{ steps.test3.outputs.duration || 0 }}"
-          check_core "${{ steps.test4.outputs.status }}" "${{ steps.test4.outcome }}" "${{ steps.test4.outputs.duration || 0 }}"
-          check_core "${{ steps.test5.outputs.status }}" "${{ steps.test5.outcome }}" "${{ steps.test5.outputs.duration || 0 }}"
-          CORE_FAILED=$FAILED
-          EXPECTED_DECISION=not_applicable_package_manager
-          if [ "${{ steps.install.outcome }}" != success ] || [ "${{ steps.install.outputs.install_status }}" != success ]; then
-            EXPECTED_DECISION=baseline_install_failed
-          elif [ "$CORE_FAILED" -gt 0 ] || [ "${{ steps.version.outcome }}" != success ] || \
-               [ -z "${{ steps.version.outputs.version }}" ] || [ "${{ steps.version.outputs.version }}" = unknown ]; then
-            EXPECTED_DECISION=baseline_failed
-          fi
-          DURATION6="${{ steps.test6.outputs.duration || 0 }}"
-          if [ "${{ steps.test6.outcome }}" = success ] && [ "${{ steps.test6.outputs.status }}" = skipped ] && \
-             [ "${{ steps.test6.outputs.decision }}" = "$EXPECTED_DECISION" ] && \
-             { { [ "$CORE_FAILED" -eq 0 ] && [ "$EXPECTED_DECISION" = not_applicable_package_manager ]; } || \
-               { [ "$CORE_FAILED" -gt 0 ] && [ "$EXPECTED_DECISION" != not_applicable_package_manager ]; }; } && \
-             [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]]; then
-            SKIPPED=1
-          else
-            FAILED=$((FAILED + 1))
-          fi
-          if [[ "$DURATION6" =~ ^[0-9]{1,6}$ ]]; then
-            TOTAL_DURATION=$((TOTAL_DURATION + 10#$DURATION6))
-          fi
+        uses: ./.github/actions/emit-package-result
+        with:
+          package_slug: multipass
+          package_name: Multipass
+          version: ${{ steps.version.outputs.version || 'unknown' }}
+          install_status: ${{ steps.install.outputs.install_status || 'failed' }}
+          test1_label: Test 1 - Check Multipass binary
+          test2_label: Test 2 - Check version command
+          test3_label: Test 3 - Check CLI help
+          test4_label: Test 4 - List available images
+          test5_label: Test 5 - Architecture Verification
+          test1_status: ${{ steps.test1.outcome || 'skipped' }}
+          test2_status: ${{ steps.test2.outcome || 'skipped' }}
+          test3_status: ${{ steps.test3.outcome || 'skipped' }}
+          test4_status: ${{ steps.test4.outcome || 'skipped' }}
+          test5_status: ${{ steps.test5.outcome || 'skipped' }}
+          test6_status: ${{ steps.test6.outputs.status || 'skipped' }}
+          test1_duration: ${{ steps.test1.outputs.duration || 0 }}
+          test2_duration: ${{ steps.test2.outputs.duration || 0 }}
+          test3_duration: ${{ steps.test3.outputs.duration || 0 }}
+          test4_duration: ${{ steps.test4.outputs.duration || 0 }}
+          test5_duration: ${{ steps.test5.outputs.duration || 0 }}
+          test6_duration: ${{ steps.test6.outputs.duration || 0 }}
+          regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
+          regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
+          regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
+          regression_next_installed_version: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}
+          regression_result: ${{ steps.test6.outputs.regression_result || 'Regression result unavailable.' }}
+          regression_details: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
 
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
-          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "core_failed=$CORE_FAILED" >> "$GITHUB_OUTPUT"
-          echo "duration=$TOTAL_DURATION" >> "$GITHUB_OUTPUT"
-
-          if [ $FAILED -eq 0 ]; then
-            echo "overall_status=success" >> "$GITHUB_OUTPUT"
-            echo "badge_status=passing" >> "$GITHUB_OUTPUT"
-          else
-            echo "overall_status=failure" >> "$GITHUB_OUTPUT"
-            echo "badge_status=failing" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-      - name: Create test summary
+      - name: Enforce failure status
         if: always()
         run: |
-          echo "## Multipass Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status:** ${{ steps.summary.outputs.overall_status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Passed:** ${{ steps.summary.outputs.passed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Failed:** ${{ steps.summary.outputs.failed }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tests Skipped:** ${{ steps.summary.outputs.skipped }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Duration:** ${{ steps.summary.outputs.duration || 0 }}s" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-24.04 (arm64)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Scope:** Installed CLI help and image query only; no VM launch or nested virtualization validation." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Test Details" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test 1 - Check multipass binary: ${{ steps.test1.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test 2 - Check version command: ${{ steps.test2.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "3. Test 3 - Check CLI help: ${{ steps.test3.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "4. Test 4 - List available images (find): ${{ steps.test4.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "5. Test 5 - Architecture Verification: ${{ steps.test5.outputs.status || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
-          echo "6. Package manager regression applicability: ${{ steps.test6.outputs.status || 'skipped' }} (${{ steps.test6.outputs.decision }})" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.summary.outputs.should_fail }}" = "1" ]; then
+            exit 1
+          fi
