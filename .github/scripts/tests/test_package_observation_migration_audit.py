@@ -136,7 +136,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
              'core_failed': 378,
              'passed': 6,
              'failed': 6,
-             'skipped': 694,
+             'skipped': 693,
              'duration': 9},
             {
                 key: len(value)
@@ -148,14 +148,15 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(75, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(278, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(277, len(remediation["literal_pair_contradictions"]))
         self.assertNotIn(
             "repeatmasker",
             [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
         )
-        # Xen writes a runtime-selected $DECISION; the advisory scan does not
-        # infer its baseline-failure branches from literal output records.
-        self.assertEqual(31, len(remediation["no_literal_decision"]))
+        # Samba and Xen write runtime-selected decisions; the advisory scan does
+        # not infer their branches from literal output records.
+        self.assertEqual(32, len(remediation["no_literal_decision"]))
+        self.assertIn("samba", remediation["no_literal_decision"])
         self.assertIn("xen-hypervisor", remediation["no_literal_decision"])
         self.assertEqual(
             301, len(remediation["package_manager_summary_omits_test6"])
@@ -258,7 +259,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            '96b4e6e011af1dac16cae49cc499569ff457dfe56aab1c97360df6a42488f7cf',
+            '7278f92df5d178f2232322e4a6f1116ce94d50ea9ca54bab5c9cb5422a442e37',
             digest,
         )
 
