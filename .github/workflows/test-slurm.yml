@@ -184,9 +184,31 @@ jobs:
           BASE_PREFIX="${SLURM_WORKDIR}/install-${SLURM_VERSION}"
           BASE_BIN="${BASE_PREFIX}/bin/srun"
           BASE_RUNNER="${BASE_BIN}"
+          BASE_CONF="${BASE_PREFIX}/etc/slurm.conf"
+          mkdir -p "${BASE_PREFIX}/etc" "${SLURM_WORKDIR}/state" "${SLURM_WORKDIR}/spool"
+          printf '%s\n' \
+            'ClusterName=arm-smoke' \
+            'SlurmctldHost=localhost' \
+            'SlurmctldPort=6817' \
+            'SlurmdPort=6818' \
+            "SlurmUser=$(id -un)" \
+            "StateSaveLocation=${SLURM_WORKDIR}/state" \
+            "SlurmdSpoolDir=${SLURM_WORKDIR}/spool" \
+            'MpiDefault=none' \
+            'ProctrackType=proctrack/linuxproc' \
+            'SchedulerType=sched/builtin' \
+            'SelectType=select/linear' \
+            'SwitchType=switch/none' \
+            'TaskPlugin=task/none' \
+            'AccountingStorageType=accounting_storage/none' \
+            'JobAcctGatherType=jobacct_gather/none' \
+            'NodeName=localhost NodeAddr=127.0.0.1 CPUs=1 State=UNKNOWN' \
+            'PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP' \
+            >"${BASE_CONF}"
           BASE_LIB="$(find "${BASE_PREFIX}" -type f \( -name 'libslurmfull.so' -o -name 'libslurmfull.so.*' \) -print -quit)"
           test -x "${BASE_BIN}"
           test -x "${BASE_RUNNER}"
+          test -s "${BASE_CONF}"
           test -n "${BASE_LIB}"
           BASE_LIB_DIR="$(dirname "${BASE_LIB}")"
           test -n "${BASE_LIB_DIR}"
@@ -202,6 +224,7 @@ jobs:
           echo "base_dir=${BASE_DIR}" >> "$GITHUB_OUTPUT"
           echo "base_bin=${BASE_BIN}" >> "$GITHUB_OUTPUT"
           echo "base_runner=${BASE_RUNNER}" >> "$GITHUB_OUTPUT"
+          echo "base_conf=${BASE_CONF}" >> "$GITHUB_OUTPUT"
           echo "base_lib_dir=${BASE_LIB_DIR}" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
@@ -210,13 +233,18 @@ jobs:
         run: |
           set -euo pipefail
           BASE_RUNNER="${{ steps.install.outputs.base_runner }}"
-          VERSION_OUTPUT="$("${BASE_RUNNER}" --version 2>&1 || true)"
-          printf '%s\n' "${VERSION_OUTPUT}"
-          VERSION="$(printf '%s\n' "$VERSION_OUTPUT" | awk 'match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }')"
-          if [ -z "${VERSION}" ]; then
-            echo "Unable to determine the built Slurm baseline version." >&2
+          BASE_CONF="${{ steps.install.outputs.base_conf }}"
+          if ! VERSION_OUTPUT="$(SLURM_CONF="${BASE_CONF}" "${BASE_RUNNER}" --version 2>&1)"; then
+            printf '%s\n' "${VERSION_OUTPUT}" >&2
+            echo "Installed Slurm baseline failed its version command." >&2
             exit 1
           fi
+          printf '%s\n' "${VERSION_OUTPUT}"
+          if [ "${VERSION_OUTPUT}" != "slurm ${SLURM_VERSION}" ]; then
+            echo "Installed Slurm baseline reported an unexpected version string." >&2
+            exit 1
+          fi
+          VERSION="${SLURM_VERSION}"
           LATEST="${SLURM_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
@@ -270,9 +298,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASE_BIN="${{ steps.install.outputs.base_bin }}"
-          export LD_LIBRARY_PATH="${{ steps.install.outputs.base_lib_dir }}:${LD_LIBRARY_PATH:-}"
-          strings "${BASE_BIN}" >/tmp/slurm-help.txt
+          BASE_RUNNER="${{ steps.install.outputs.base_runner }}"
+          BASE_CONF="${{ steps.install.outputs.base_conf }}"
+          SLURM_CONF="${BASE_CONF}" "${BASE_RUNNER}" --help >/tmp/slurm-help.txt 2>&1
 
           if grep -Eqi "usage: srun|srun \[OPTIONS\]|usage|options" /tmp/slurm-help.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -316,9 +344,15 @@ jobs:
           set -euo pipefail
           START_TIME=$(date +%s)
           BASE_RUNNER="${{ steps.install.outputs.base_runner }}"
+          BASE_CONF="${{ steps.install.outputs.base_conf }}"
 
-          timeout 10s "${BASE_RUNNER}" -n1 /bin/true >/tmp/slurm-functional.txt 2>&1 || true
-          if grep -Eqi "Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|configuration source|Could not establish a configuration source" /tmp/slurm-functional.txt; then
+          set +e
+          SLURM_CONF="${BASE_CONF}" timeout 10s "${BASE_RUNNER}" -N1 -n1 /bin/true >/tmp/slurm-functional.txt 2>&1
+          RUN_RC=$?
+          set -e
+          if [ "${RUN_RC}" -ne 0 ] \
+             && grep -Eqi "Unable to contact slurm controller|connect failure|Connection refused|Socket timed out|Munge encode failed|authentication error" /tmp/slurm-functional.txt \
+             && ! grep -Eqi "Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|Could not establish a configuration source" /tmp/slurm-functional.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/slurm-functional.txt || true
@@ -417,8 +451,29 @@ jobs:
           NEXT_PREFIX="${REGRESSION_WORKDIR}/install-${LATEST}"
           NEXT_BIN="${NEXT_PREFIX}/bin/srun"
           NEXT_RUNNER="${NEXT_BIN}"
+          NEXT_CONF="${NEXT_PREFIX}/etc/slurm.conf"
+          mkdir -p "${NEXT_PREFIX}/etc" "${REGRESSION_WORKDIR}/state" "${REGRESSION_WORKDIR}/spool"
+          printf '%s\n' \
+            'ClusterName=arm-smoke' \
+            'SlurmctldHost=localhost' \
+            'SlurmctldPort=6817' \
+            'SlurmdPort=6818' \
+            "SlurmUser=$(id -un)" \
+            "StateSaveLocation=${REGRESSION_WORKDIR}/state" \
+            "SlurmdSpoolDir=${REGRESSION_WORKDIR}/spool" \
+            'MpiDefault=none' \
+            'ProctrackType=proctrack/linuxproc' \
+            'SchedulerType=sched/builtin' \
+            'SelectType=select/linear' \
+            'SwitchType=switch/none' \
+            'TaskPlugin=task/none' \
+            'AccountingStorageType=accounting_storage/none' \
+            'JobAcctGatherType=jobacct_gather/none' \
+            'NodeName=localhost NodeAddr=127.0.0.1 CPUs=1 State=UNKNOWN' \
+            'PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP' \
+            >"${NEXT_CONF}"
           NEXT_LIB="$(find "${NEXT_PREFIX}" -type f \( -name 'libslurmfull.so' -o -name 'libslurmfull.so.*' \) -print -quit)"
-          if [ ! -x "${NEXT_BIN}" ] || [ ! -x "${NEXT_RUNNER}" ] || [ -z "${NEXT_LIB}" ] || ! file "${NEXT_BIN}" | grep -qi "ARM aarch64"; then
+          if [ ! -x "${NEXT_BIN}" ] || [ ! -x "${NEXT_RUNNER}" ] || [ ! -s "${NEXT_CONF}" ] || [ -z "${NEXT_LIB}" ] || ! file "${NEXT_BIN}" | grep -qi "ARM aarch64"; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -452,22 +507,32 @@ jobs:
             exit 1
           fi
 
-          NEXT_VERSION_OUTPUT="$("${NEXT_RUNNER}" --version 2>&1 || true)"
+          if ! NEXT_VERSION_OUTPUT="$(SLURM_CONF="${NEXT_CONF}" "${NEXT_RUNNER}" --version 2>&1)"; then
+            printf '%s\n' "${NEXT_VERSION_OUTPUT}" >&2
+            echo "next_installed_version=version_command_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version identity validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the installed candidate version command failed." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           printf '%s\n' "${NEXT_VERSION_OUTPUT}"
-          NEXT_VERSION="$(printf '%s\n' "${NEXT_VERSION_OUTPUT}" | awk 'match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }')"
-          if [ -z "${NEXT_VERSION}" ] || [ "${NEXT_VERSION}" != "${LATEST}" ]; then
-            echo "next_installed_version=${NEXT_VERSION:-version_mismatch}" >> "$GITHUB_OUTPUT"
+          if [ "${NEXT_VERSION_OUTPUT}" != "slurm ${LATEST}" ]; then
+            echo "next_installed_version=version_mismatch" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version identity validation failed on Arm64" >> "$GITHUB_OUTPUT"
             echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the candidate binary did not report the expected version ${LATEST}." >> "$GITHUB_OUTPUT"
-            echo "Next version installed on Arm64: ${NEXT_VERSION:-version_mismatch}"
+            echo "Next version installed on Arm64: version_mismatch"
             echo "Regression install result: Next version identity validation failed on Arm64"
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          strings "${NEXT_BIN}" >/tmp/slurm-next-help.txt
+          NEXT_VERSION="${LATEST}"
+          SLURM_CONF="${NEXT_CONF}" "${NEXT_RUNNER}" --help >/tmp/slurm-next-help.txt 2>&1
           if ! grep -Eqi "usage: srun|srun \[OPTIONS\]|usage|options" /tmp/slurm-next-help.txt; then
             cat /tmp/slurm-next-help.txt || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -483,8 +548,13 @@ jobs:
             exit 1
           fi
 
-          timeout 10s "${NEXT_RUNNER}" -n1 /bin/true >/tmp/slurm-next-functional.txt 2>&1 || true
-          if ! grep -Eqi "Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|configuration source|Could not establish a configuration source" /tmp/slurm-next-functional.txt; then
+          set +e
+          SLURM_CONF="${NEXT_CONF}" timeout 10s "${NEXT_RUNNER}" -N1 -n1 /bin/true >/tmp/slurm-next-functional.txt 2>&1
+          NEXT_RUN_RC=$?
+          set -e
+          if [ "${NEXT_RUN_RC}" -eq 0 ] \
+             || ! grep -Eqi "Unable to contact slurm controller|connect failure|Connection refused|Socket timed out|Munge encode failed|authentication error" /tmp/slurm-next-functional.txt \
+             || grep -Eqi "Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|Could not establish a configuration source" /tmp/slurm-next-functional.txt; then
             cat /tmp/slurm-next-functional.txt || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
