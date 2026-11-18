@@ -295,12 +295,14 @@ print(f"{sys.argv[-1]}: ELF 64-bit LSB pie executable, ARM aarch64")
     def run_step(self, name, values=None, **environment):
         bindings = {**self.values, **(values or {})}
         step = self.steps[name]
+        source = step["run"].replace(
+            "/tmp/samba-", str(self.root / "samba-")
+        )
         step_env = {
             key: self.render(str(value), bindings)
             for key, value in step.get("env", {}).items()
         }
-        script = self.render(step["run"], bindings)
-        script = script.replace("/tmp/samba-", str(self.root / "samba-"))
+        script = self.render(source, bindings)
         script = script.replace(
             "for _ in $(seq 1 30); do", "for _ in $(seq 1 2); do"
         )
