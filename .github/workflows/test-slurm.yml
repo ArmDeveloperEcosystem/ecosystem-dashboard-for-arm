@@ -79,11 +79,14 @@ on:
 jobs:
   test-slurm:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     env:
       SLURM_VERSION: "25.05.7"
       SLURM_BASE_COMMIT: "8548115d761223c8290e66b4fdddb198b289a61c"
+      SLURM_BASE_SHA256: "747e1220ea9eae33e5472b4e582e4da8befb3b1edd49efe83a91c0923419bf7e"
       SLURM_NEXT_VERSION: "25.11.4"
       SLURM_NEXT_COMMIT: "bd3498744a425719542759c2618ba49e216e74b0"
+      SLURM_NEXT_SHA256: "237f515adcb37b99ff6cb3e1fa81691a5f7188e94c3b6b495858b4eaecf6531d"
       SLURM_WORKDIR: "/tmp/slurm-smoke"
 
     outputs:
@@ -147,10 +150,12 @@ jobs:
           FALLBACK_ARCHIVE="${SLURM_WORKDIR}/slurm-${SLURM_BASE_COMMIT}.tar.gz"
           if curl --fail --location --silent --show-error --ipv4 \
               --retry 2 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 60 \
               --connect-timeout 15 --max-time 300 \
               "https://download.schedmd.com/slurm/slurm-${SLURM_VERSION}.tar.bz2" \
-              --output "${PRIMARY_ARCHIVE}" \
-            && tar -xjf "${PRIMARY_ARCHIVE}" -C "${SLURM_WORKDIR}"; then
+              --output "${PRIMARY_ARCHIVE}"; then
+            printf '%s  %s\n' "${SLURM_BASE_SHA256}" "${PRIMARY_ARCHIVE}" | sha256sum --check --strict -
+            tar -xjf "${PRIMARY_ARCHIVE}" -C "${SLURM_WORKDIR}"
             echo "Installed Slurm ${SLURM_VERSION} from the official SchedMD release archive."
           else
             echo "::warning::SchedMD release archive unavailable; using the pinned official SchedMD GitHub commit ${SLURM_BASE_COMMIT}."
@@ -158,6 +163,7 @@ jobs:
             mkdir -p "${BASE_DIR}"
             curl --fail --location --silent --show-error --ipv4 \
               --retry 5 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 180 \
               --connect-timeout 20 --max-time 600 \
               "https://github.com/SchedMD/slurm/archive/${SLURM_BASE_COMMIT}.tar.gz" \
               --output "${FALLBACK_ARCHIVE}"
@@ -165,6 +171,8 @@ jobs:
           fi
 
           test -x "${BASE_DIR}/configure"
+          META_VERSION="$(awk '$1 == "Version:" {print $2; exit}' "${BASE_DIR}/META")"
+          test "${META_VERSION}" = "${SLURM_VERSION}"
           cd "${BASE_DIR}"
           ./configure \
             --prefix="${SLURM_WORKDIR}/install-${SLURM_VERSION}" \
@@ -191,7 +199,8 @@ jobs:
           VERSION_OUTPUT="$("${BASE_BIN}" --version 2>&1 || true)"
           VERSION="$(printf '%s\n' "$VERSION_OUTPUT" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)"
           if [ -z "${VERSION}" ]; then
-            VERSION="${SLURM_VERSION}"
+            echo "Unable to determine the built Slurm baseline version." >&2
+            exit 1
           fi
           LATEST="${SLURM_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
@@ -344,10 +353,12 @@ jobs:
           FALLBACK_ARCHIVE="${REGRESSION_WORKDIR}/slurm-${SLURM_NEXT_COMMIT}.tar.gz"
           if curl --fail --location --silent --show-error --ipv4 \
               --retry 2 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 60 \
               --connect-timeout 15 --max-time 300 \
               "https://download.schedmd.com/slurm/slurm-${LATEST}.tar.bz2" \
-              --output "${PRIMARY_ARCHIVE}" \
-            && tar -xjf "${PRIMARY_ARCHIVE}" -C "${REGRESSION_WORKDIR}"; then
+              --output "${PRIMARY_ARCHIVE}"; then
+            printf '%s  %s\n' "${SLURM_NEXT_SHA256}" "${PRIMARY_ARCHIVE}" | sha256sum --check --strict -
+            tar -xjf "${PRIMARY_ARCHIVE}" -C "${REGRESSION_WORKDIR}"
             echo "Installed Slurm ${LATEST} from the official SchedMD release archive."
           else
             echo "::warning::SchedMD release archive unavailable; using the pinned official SchedMD GitHub commit ${SLURM_NEXT_COMMIT}."
@@ -355,6 +366,7 @@ jobs:
             mkdir -p "${NEXT_DIR}"
             curl --fail --location --silent --show-error --ipv4 \
               --retry 5 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 180 \
               --connect-timeout 20 --max-time 600 \
               "https://github.com/SchedMD/slurm/archive/${SLURM_NEXT_COMMIT}.tar.gz" \
               --output "${FALLBACK_ARCHIVE}"
@@ -362,6 +374,8 @@ jobs:
           fi
 
           test -x "${NEXT_DIR}/configure"
+          META_VERSION="$(awk '$1 == "Version:" {print $2; exit}' "${NEXT_DIR}/META")"
+          test "${META_VERSION}" = "${LATEST}"
           cd "${NEXT_DIR}"
           ./configure \
             --prefix="${REGRESSION_WORKDIR}/install-${LATEST}" \
@@ -388,8 +402,17 @@ jobs:
           export LD_LIBRARY_PATH="${NEXT_LIB_DIR}:${LD_LIBRARY_PATH:-}"
           NEXT_VERSION_OUTPUT="$("${NEXT_BIN}" --version 2>&1 || true)"
           NEXT_VERSION="$(printf '%s\n' "${NEXT_VERSION_OUTPUT}" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)"
-          if [ -z "${NEXT_VERSION}" ]; then
-            NEXT_VERSION="${LATEST}"
+          if [ -z "${NEXT_VERSION}" ] || [ "${NEXT_VERSION}" != "${LATEST}" ]; then
+            echo "next_installed_version=${NEXT_VERSION:-version_mismatch}" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version identity validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the candidate binary did not report the expected version ${LATEST}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: ${NEXT_VERSION:-version_mismatch}"
+            echo "Regression install result: Next version identity validation failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
           strings "${NEXT_BIN}" >/tmp/slurm-next-help.txt
           if ! grep -Eqi "usage: srun|srun \[OPTIONS\]|usage|options" /tmp/slurm-next-help.txt; then
