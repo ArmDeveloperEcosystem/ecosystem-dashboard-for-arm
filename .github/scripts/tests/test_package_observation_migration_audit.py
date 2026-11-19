@@ -33,9 +33,9 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             {'baseline_failed': 7,
              'baseline_install_failed': 2,
              'next_install_failed': 1,
-             'next_regression_failed': 5,
+             'next_regression_failed': 7,
              'not_applicable_package_manager': 7,
-             'not_configured': 944},
+             'not_configured': 942},
             self.report["fallback_counts"],
         )
         self.assertEqual(
@@ -136,7 +136,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
              'core_failed': 378,
              'passed': 6,
              'failed': 6,
-             'skipped': 693,
+             'skipped': 691,
              'duration': 9},
             {
                 key: len(value)
@@ -148,7 +148,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             len(remediation["package_manager_missing_explicit_skip_counter"]),
         )
         self.assertEqual(75, len(remediation["package_manager_non_skipped_status"]))
-        self.assertEqual(277, len(remediation["literal_pair_contradictions"]))
+        self.assertEqual(275, len(remediation["literal_pair_contradictions"]))
         self.assertNotIn(
             "repeatmasker",
             [item["package_slug"] for item in remediation["literal_pair_contradictions"]],
@@ -163,7 +163,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         )
         # The audit flags every default except not_configured, including Chef's
         # Garden's, Chiaki's and these repairs' failure defaults; runtime tests prove they stay red.
-        self.assertEqual(22, len(remediation["unsafe_fallback_workflows"]))
+        self.assertEqual(24, len(remediation["unsafe_fallback_workflows"]))
         self.assertIn("chef-infra", remediation["unsafe_fallback_workflows"])
         self.assertIn("chiaki-ng", remediation["unsafe_fallback_workflows"])
         self.assertIn("garden-linux", remediation["unsafe_fallback_workflows"])
@@ -209,7 +209,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
             [], remediation["invalid_workflow_call_observation_output"]
         )
         self.assertEqual(
-            373,
+            371,
             len(remediation["non_package_manager_missing_baseline_guard"]),
         )
         self.assertIn(
@@ -259,7 +259,7 @@ class PackageObservationMigrationAuditTests(unittest.TestCase):
         self.assertNotIn("/private/tmp/", encoded)
         digest = hashlib.sha256((encoded + "\n").encode("ascii")).hexdigest()
         self.assertEqual(
-            '7278f92df5d178f2232322e4a6f1116ce94d50ea9ca54bab5c9cb5422a442e37',
+            '0f83823b0e333e37c31583314423fb0d1bca182580deab5f7f12ecc6d896d4fe',
             digest,
         )
 
