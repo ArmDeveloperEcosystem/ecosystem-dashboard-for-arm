@@ -79,9 +79,14 @@ on:
 jobs:
   test-slurm:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     env:
       SLURM_VERSION: "25.05.7"
+      SLURM_BASE_COMMIT: "8548115d761223c8290e66b4fdddb198b289a61c"
+      SLURM_BASE_SHA256: "747e1220ea9eae33e5472b4e582e4da8befb3b1edd49efe83a91c0923419bf7e"
       SLURM_NEXT_VERSION: "25.11.4"
+      SLURM_NEXT_COMMIT: "bd3498744a425719542759c2618ba49e216e74b0"
+      SLURM_NEXT_SHA256: "237f515adcb37b99ff6cb3e1fa81691a5f7188e94c3b6b495858b4eaecf6531d"
       SLURM_WORKDIR: "/tmp/slurm-smoke"
 
     outputs:
@@ -96,9 +101,9 @@ jobs:
       tests_failed: ${{ steps.summary.outputs.failed || '0' }}
       tests_skipped: ${{ steps.summary.outputs.skipped || '0' }}
       duration_seconds: ${{ steps.summary.outputs.duration || '0' }}
-      regression_status: ${{ steps.test6.outputs.status || 'skipped' }}
-      regression_decision: ${{ steps.test6.outputs.decision || 'not_configured' }}
-      regression_result: ${{ steps.test6.outputs.regression_result || '' }}
+      regression_status: ${{ steps.test6.outputs.status || 'failed' }}
+      regression_decision: ${{ steps.test6.outputs.decision || 'next_regression_failed' }}
+      regression_result: ${{ steps.test6.outputs.regression_result || 'Pinned regression candidate validation failed before completion.' }}
       regression_comparison: ${{ steps.test6.outputs.comparison || 'Regression comparison summary unavailable.' }}
       regression_current_version: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}
       regression_latest_version: ${{ steps.test6.outputs.latest_version || 'unknown' }}
@@ -140,25 +145,88 @@ jobs:
 
           rm -rf "${SLURM_WORKDIR}"
           mkdir -p "${SLURM_WORKDIR}"
-          curl -fsSL -o "${SLURM_WORKDIR}/slurm-${SLURM_VERSION}.tar.bz2" \
-            "https://download.schedmd.com/slurm/slurm-${SLURM_VERSION}.tar.bz2"
-          tar -xjf "${SLURM_WORKDIR}/slurm-${SLURM_VERSION}.tar.bz2" -C "${SLURM_WORKDIR}"
-
           BASE_DIR="${SLURM_WORKDIR}/slurm-${SLURM_VERSION}"
+          PRIMARY_ARCHIVE="${SLURM_WORKDIR}/slurm-${SLURM_VERSION}.tar.bz2"
+          FALLBACK_ARCHIVE="${SLURM_WORKDIR}/slurm-${SLURM_BASE_COMMIT}.tar.gz"
+          if curl --fail --location --silent --show-error --ipv4 \
+              --retry 2 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 60 \
+              --connect-timeout 15 --max-time 300 \
+              "https://download.schedmd.com/slurm/slurm-${SLURM_VERSION}.tar.bz2" \
+              --output "${PRIMARY_ARCHIVE}"; then
+            printf '%s  %s\n' "${SLURM_BASE_SHA256}" "${PRIMARY_ARCHIVE}" | sha256sum --check --strict -
+            tar -xjf "${PRIMARY_ARCHIVE}" -C "${SLURM_WORKDIR}"
+            echo "Installed Slurm ${SLURM_VERSION} from the official SchedMD release archive."
+          else
+            echo "::warning::SchedMD release archive unavailable; using the pinned official SchedMD GitHub commit ${SLURM_BASE_COMMIT}."
+            rm -rf "${BASE_DIR}" "${PRIMARY_ARCHIVE}"
+            mkdir -p "${BASE_DIR}"
+            curl --fail --location --silent --show-error --ipv4 \
+              --retry 5 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 180 \
+              --connect-timeout 20 --max-time 600 \
+              "https://github.com/SchedMD/slurm/archive/${SLURM_BASE_COMMIT}.tar.gz" \
+              --output "${FALLBACK_ARCHIVE}"
+            tar -xzf "${FALLBACK_ARCHIVE}" --strip-components=1 -C "${BASE_DIR}"
+          fi
+
+          test -x "${BASE_DIR}/configure"
+          META_VERSION="$(awk '$1 == "Version:" {print $2; exit}' "${BASE_DIR}/META")"
+          test "${META_VERSION}" = "${SLURM_VERSION}"
           cd "${BASE_DIR}"
           ./configure \
             --prefix="${SLURM_WORKDIR}/install-${SLURM_VERSION}" \
             --sysconfdir="${SLURM_WORKDIR}/install-${SLURM_VERSION}/etc" \
             >/tmp/slurm-configure-baseline.log 2>&1
           make -j2 >/tmp/slurm-make-baseline.log 2>&1
+          make -j2 install >/tmp/slurm-install-baseline.log 2>&1
 
-          BASE_BIN="${BASE_DIR}/src/srun/.libs/srun"
-          BASE_LIB_DIR="$(dirname "$(find "${BASE_DIR}" -type f \( -name 'libslurmfull.so' -o -name 'libslurmfull.so.*' \) | head -1)")"
+          BASE_PREFIX="${SLURM_WORKDIR}/install-${SLURM_VERSION}"
+          BASE_BIN="${BASE_PREFIX}/bin/srun"
+          BASE_RUNNER="${BASE_BIN}"
+          BASE_CONF="${BASE_PREFIX}/etc/slurm.conf"
+          mkdir -p "${BASE_PREFIX}/etc" "${SLURM_WORKDIR}/state" "${SLURM_WORKDIR}/spool"
+          printf '%s\n' \
+            'ClusterName=arm-smoke' \
+            'SlurmctldHost=smoke-controller(127.0.0.1)' \
+            'AuthType=auth/none' \
+            'CredType=cred/none' \
+            'SlurmctldPort=1' \
+            'SlurmdPort=6818' \
+            'MessageTimeout=2' \
+            "SlurmUser=$(id -un)" \
+            "StateSaveLocation=${SLURM_WORKDIR}/state" \
+            "SlurmdSpoolDir=${SLURM_WORKDIR}/spool" \
+            'MpiDefault=none' \
+            'ProctrackType=proctrack/linuxproc' \
+            'SchedulerType=sched/builtin' \
+            'SelectType=select/linear' \
+            'SwitchType=switch/none' \
+            'TaskPlugin=task/none' \
+            'JobAcctGatherType=jobacct_gather/none' \
+            'NodeName=localhost NodeAddr=127.0.0.1 CPUs=1 State=UNKNOWN' \
+            'PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP' \
+            >"${BASE_CONF}"
+          BASE_LIB="$(find "${BASE_PREFIX}" -type f \( -name 'libslurmfull.so' -o -name 'libslurmfull.so.*' \) -print -quit)"
           test -x "${BASE_BIN}"
+          test -x "${BASE_RUNNER}"
+          test -s "${BASE_CONF}"
+          test -n "${BASE_LIB}"
+          BASE_LIB_DIR="$(dirname "${BASE_LIB}")"
           test -n "${BASE_LIB_DIR}"
+          if ! ldd "${BASE_BIN}" | tee /tmp/slurm-ldd-baseline.log; then
+            echo "Unable to inspect installed Slurm baseline shared-library dependencies." >&2
+            exit 1
+          fi
+          if grep -q 'not found' /tmp/slurm-ldd-baseline.log; then
+            echo "Installed Slurm baseline has unresolved shared-library dependencies." >&2
+            exit 1
+          fi
 
           echo "base_dir=${BASE_DIR}" >> "$GITHUB_OUTPUT"
           echo "base_bin=${BASE_BIN}" >> "$GITHUB_OUTPUT"
+          echo "base_runner=${BASE_RUNNER}" >> "$GITHUB_OUTPUT"
+          echo "base_conf=${BASE_CONF}" >> "$GITHUB_OUTPUT"
           echo "base_lib_dir=${BASE_LIB_DIR}" >> "$GITHUB_OUTPUT"
           echo "install_status=success" >> "$GITHUB_OUTPUT"
 
@@ -166,18 +234,24 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          BASE_BIN="${{ steps.install.outputs.base_bin }}"
-          export LD_LIBRARY_PATH="${{ steps.install.outputs.base_lib_dir }}:${LD_LIBRARY_PATH:-}"
-          VERSION_OUTPUT="$("${BASE_BIN}" --version 2>&1 || true)"
-          VERSION="$(printf '%s\n' "$VERSION_OUTPUT" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)"
-          if [ -z "${VERSION}" ]; then
-            VERSION="${SLURM_VERSION}"
+          BASE_RUNNER="${{ steps.install.outputs.base_runner }}"
+          BASE_CONF="${{ steps.install.outputs.base_conf }}"
+          if ! VERSION_OUTPUT="$(SLURM_CONF="${BASE_CONF}" "${BASE_RUNNER}" --version 2>&1)"; then
+            printf '%s\n' "${VERSION_OUTPUT}" >&2
+            echo "Installed Slurm baseline failed its version command." >&2
+            exit 1
           fi
+          printf '%s\n' "${VERSION_OUTPUT}"
+          if [ "${VERSION_OUTPUT}" != "slurm ${SLURM_VERSION}" ]; then
+            echo "Installed Slurm baseline reported an unexpected version string." >&2
+            exit 1
+          fi
+          VERSION="${SLURM_VERSION}"
           LATEST="${SLURM_NEXT_VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "latest=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "Detected Slurm version: ${VERSION}"
-          echo "Detected latest stable release: ${LATEST}"
+          echo "Pinned regression candidate: ${LATEST}"
 
       - name: Test 1 - Check srun binary exists
         id: test1
@@ -226,9 +300,9 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASE_BIN="${{ steps.install.outputs.base_bin }}"
-          export LD_LIBRARY_PATH="${{ steps.install.outputs.base_lib_dir }}:${LD_LIBRARY_PATH:-}"
-          strings "${BASE_BIN}" >/tmp/slurm-help.txt
+          BASE_RUNNER="${{ steps.install.outputs.base_runner }}"
+          BASE_CONF="${{ steps.install.outputs.base_conf }}"
+          SLURM_CONF="${BASE_CONF}" "${BASE_RUNNER}" --help >/tmp/slurm-help.txt 2>&1
 
           if grep -Eqi "usage: srun|srun \[OPTIONS\]|usage|options" /tmp/slurm-help.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
@@ -271,11 +345,17 @@ jobs:
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          BASE_BIN="${{ steps.install.outputs.base_bin }}"
-          export LD_LIBRARY_PATH="${{ steps.install.outputs.base_lib_dir }}:${LD_LIBRARY_PATH:-}"
+          BASE_RUNNER="${{ steps.install.outputs.base_runner }}"
+          BASE_CONF="${{ steps.install.outputs.base_conf }}"
 
-          timeout 10s "${BASE_BIN}" -n1 /bin/true >/tmp/slurm-functional.txt 2>&1 || true
-          if grep -Eqi "Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|configuration source|Could not establish a configuration source" /tmp/slurm-functional.txt; then
+          set +e
+          SLURM_CONF="${BASE_CONF}" timeout 10s "${BASE_RUNNER}" -N1 -n1 /bin/true >/tmp/slurm-functional.txt 2>&1
+          RUN_RC=$?
+          set -e
+          if [ "${RUN_RC}" -ne 0 ] \
+             && [ "${RUN_RC}" -ne 124 ] \
+             && grep -Fqi "Unable to contact slurm controller (connect failure)" /tmp/slurm-functional.txt \
+             && ! grep -Eqi "Munge|authentication error|Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|Could not establish a configuration source" /tmp/slurm-functional.txt; then
             echo "status=passed" >> "$GITHUB_OUTPUT"
           else
             cat /tmp/slurm-functional.txt || true
@@ -289,28 +369,50 @@ jobs:
           echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
 
       - name: Test 6 - Regression Validation
+        if: always()
         id: test6
         run: |
           set -euo pipefail
           START_TIME=$(date +%s)
-          CURRENT="${{ steps.version.outputs.version }}"
-          LATEST="${{ steps.version.outputs.latest }}"
+          CURRENT="${{ steps.version.outputs.version || 'unknown' }}"
+          LATEST="${{ env.SLURM_NEXT_VERSION }}"
           REGRESSION_WORKDIR="/tmp/slurm-regression"
 
           echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
           echo "latest_version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+          echo "decision=next_regression_failed" >> "$GITHUB_OUTPUT"
+          echo "regression_result=Pinned regression candidate validation failed before completion." >> "$GITHUB_OUTPUT"
+          echo "comparison=The pinned Slurm candidate ${LATEST} did not complete its Arm64 regression probe, so no candidate compatibility result was accepted." >> "$GITHUB_OUTPUT"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "duration=0" >> "$GITHUB_OUTPUT"
           echo "=== Regression Validation (Next Version Install) ==="
           echo "Current version tested in Tests 1-5: ${CURRENT}"
           echo "Next version targeted for install validation: ${LATEST}"
+
+          if [ "${{ steps.test1.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test2.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test3.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test4.outputs.status || 'failed' }}" != "passed" ] || \
+             [ "${{ steps.test5.outputs.status || 'failed' }}" != "passed" ]; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=baseline_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Regression validation skipped because one or more baseline tests (1-5) failed." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} did not complete baseline smoke validation in this run, so next-version validation was not attempted." >> "$GITHUB_OUTPUT"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "${LATEST}" ] || [ "${LATEST}" = "unknown" ]; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_lookup_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version lookup failed on Arm64" >> "$GITHUB_OUTPUT"
-            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the latest stable source tarball could not be resolved from the official SchedMD archive for Arm64 install validation." >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but pinned regression candidate ${LATEST} could not be resolved from the official SchedMD archive for Arm64 install validation." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: not_installed"
             echo "Regression install result: Next version lookup failed on Arm64"
-            echo "Details: Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the latest stable source tarball could not be resolved from the official SchedMD archive for Arm64 install validation."
+            echo "Details: Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but pinned regression candidate ${LATEST} could not be resolved from the official SchedMD archive for Arm64 install validation."
             echo "status=failed" >> "$GITHUB_OUTPUT"
             END_TIME=$(date +%s)
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
@@ -319,20 +421,70 @@ jobs:
 
           rm -rf "${REGRESSION_WORKDIR}"
           mkdir -p "${REGRESSION_WORKDIR}"
-          curl -fsSL -o "${REGRESSION_WORKDIR}/slurm-${LATEST}.tar.bz2" \
-            "https://download.schedmd.com/slurm/slurm-${LATEST}.tar.bz2"
-          tar -xjf "${REGRESSION_WORKDIR}/slurm-${LATEST}.tar.bz2" -C "${REGRESSION_WORKDIR}"
           NEXT_DIR="${REGRESSION_WORKDIR}/slurm-${LATEST}"
+          PRIMARY_ARCHIVE="${REGRESSION_WORKDIR}/slurm-${LATEST}.tar.bz2"
+          FALLBACK_ARCHIVE="${REGRESSION_WORKDIR}/slurm-${SLURM_NEXT_COMMIT}.tar.gz"
+          if curl --fail --location --silent --show-error --ipv4 \
+              --retry 2 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 60 \
+              --connect-timeout 15 --max-time 300 \
+              "https://download.schedmd.com/slurm/slurm-${LATEST}.tar.bz2" \
+              --output "${PRIMARY_ARCHIVE}"; then
+            printf '%s  %s\n' "${SLURM_NEXT_SHA256}" "${PRIMARY_ARCHIVE}" | sha256sum --check --strict -
+            tar -xjf "${PRIMARY_ARCHIVE}" -C "${REGRESSION_WORKDIR}"
+            echo "Installed Slurm ${LATEST} from the official SchedMD release archive."
+          else
+            echo "::warning::SchedMD release archive unavailable; using the pinned official SchedMD GitHub commit ${SLURM_NEXT_COMMIT}."
+            rm -rf "${NEXT_DIR}" "${PRIMARY_ARCHIVE}"
+            mkdir -p "${NEXT_DIR}"
+            curl --fail --location --silent --show-error --ipv4 \
+              --retry 5 --retry-all-errors --retry-delay 3 \
+              --retry-max-time 180 \
+              --connect-timeout 20 --max-time 600 \
+              "https://github.com/SchedMD/slurm/archive/${SLURM_NEXT_COMMIT}.tar.gz" \
+              --output "${FALLBACK_ARCHIVE}"
+            tar -xzf "${FALLBACK_ARCHIVE}" --strip-components=1 -C "${NEXT_DIR}"
+          fi
+
+          test -x "${NEXT_DIR}/configure"
+          META_VERSION="$(awk '$1 == "Version:" {print $2; exit}' "${NEXT_DIR}/META")"
+          test "${META_VERSION}" = "${LATEST}"
           cd "${NEXT_DIR}"
           ./configure \
             --prefix="${REGRESSION_WORKDIR}/install-${LATEST}" \
             --sysconfdir="${REGRESSION_WORKDIR}/install-${LATEST}/etc" \
             >/tmp/slurm-configure-next.log 2>&1
           make -j2 >/tmp/slurm-make-next.log 2>&1
+          make -j2 install >/tmp/slurm-install-next.log 2>&1
 
-          NEXT_BIN="${NEXT_DIR}/src/srun/.libs/srun"
-          NEXT_LIB_DIR="$(dirname "$(find "${NEXT_DIR}" -type f \( -name 'libslurmfull.so' -o -name 'libslurmfull.so.*' \) | head -1)")"
-          if [ ! -x "${NEXT_BIN}" ] || [ -z "${NEXT_LIB_DIR}" ] || ! file "${NEXT_BIN}" | grep -qi "ARM aarch64"; then
+          NEXT_PREFIX="${REGRESSION_WORKDIR}/install-${LATEST}"
+          NEXT_BIN="${NEXT_PREFIX}/bin/srun"
+          NEXT_RUNNER="${NEXT_BIN}"
+          NEXT_CONF="${NEXT_PREFIX}/etc/slurm.conf"
+          mkdir -p "${NEXT_PREFIX}/etc" "${REGRESSION_WORKDIR}/state" "${REGRESSION_WORKDIR}/spool"
+          printf '%s\n' \
+            'ClusterName=arm-smoke' \
+            'SlurmctldHost=smoke-controller(127.0.0.1)' \
+            'AuthType=auth/none' \
+            'CredType=cred/none' \
+            'SlurmctldPort=1' \
+            'SlurmdPort=6818' \
+            'MessageTimeout=2' \
+            "SlurmUser=$(id -un)" \
+            "StateSaveLocation=${REGRESSION_WORKDIR}/state" \
+            "SlurmdSpoolDir=${REGRESSION_WORKDIR}/spool" \
+            'MpiDefault=none' \
+            'ProctrackType=proctrack/linuxproc' \
+            'SchedulerType=sched/builtin' \
+            'SelectType=select/linear' \
+            'SwitchType=switch/none' \
+            'TaskPlugin=task/none' \
+            'JobAcctGatherType=jobacct_gather/none' \
+            'NodeName=localhost NodeAddr=127.0.0.1 CPUs=1 State=UNKNOWN' \
+            'PartitionName=debug Nodes=localhost Default=YES MaxTime=INFINITE State=UP' \
+            >"${NEXT_CONF}"
+          NEXT_LIB="$(find "${NEXT_PREFIX}" -type f \( -name 'libslurmfull.so' -o -name 'libslurmfull.so.*' \) -print -quit)"
+          if [ ! -x "${NEXT_BIN}" ] || [ ! -x "${NEXT_RUNNER}" ] || [ ! -s "${NEXT_CONF}" ] || [ -z "${NEXT_LIB}" ] || ! file "${NEXT_BIN}" | grep -qi "ARM aarch64"; then
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
@@ -345,14 +497,53 @@ jobs:
             echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-
-          export LD_LIBRARY_PATH="${NEXT_LIB_DIR}:${LD_LIBRARY_PATH:-}"
-          NEXT_VERSION_OUTPUT="$("${NEXT_BIN}" --version 2>&1 || true)"
-          NEXT_VERSION="$(printf '%s\n' "${NEXT_VERSION_OUTPUT}" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)"
-          if [ -z "${NEXT_VERSION}" ]; then
-            NEXT_VERSION="${LATEST}"
+          if ! ldd "${NEXT_BIN}" | tee /tmp/slurm-ldd-next.log; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the candidate shared-library dependencies could not be inspected." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          strings "${NEXT_BIN}" >/tmp/slurm-next-help.txt
+          if grep -q 'not found' /tmp/slurm-ldd-next.log; then
+            echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version install failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the installed candidate has unresolved shared-library dependencies." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if ! NEXT_VERSION_OUTPUT="$(SLURM_CONF="${NEXT_CONF}" "${NEXT_RUNNER}" --version 2>&1)"; then
+            printf '%s\n' "${NEXT_VERSION_OUTPUT}" >&2
+            echo "next_installed_version=version_command_failed" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version identity validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the installed candidate version command failed." >> "$GITHUB_OUTPUT"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          printf '%s\n' "${NEXT_VERSION_OUTPUT}"
+          if [ "${NEXT_VERSION_OUTPUT}" != "slurm ${LATEST}" ]; then
+            echo "next_installed_version=version_mismatch" >> "$GITHUB_OUTPUT"
+            echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
+            echo "regression_result=Next version identity validation failed on Arm64" >> "$GITHUB_OUTPUT"
+            echo "comparison=Current pinned Slurm version ${CURRENT} passed smoke tests in this run, but the candidate binary did not report the expected version ${LATEST}." >> "$GITHUB_OUTPUT"
+            echo "Next version installed on Arm64: version_mismatch"
+            echo "Regression install result: Next version identity validation failed on Arm64"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            END_TIME=$(date +%s)
+            echo "duration=$((END_TIME - START_TIME))" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          NEXT_VERSION="${LATEST}"
+          SLURM_CONF="${NEXT_CONF}" "${NEXT_RUNNER}" --help >/tmp/slurm-next-help.txt 2>&1
           if ! grep -Eqi "usage: srun|srun \[OPTIONS\]|usage|options" /tmp/slurm-next-help.txt; then
             cat /tmp/slurm-next-help.txt || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
@@ -368,8 +559,14 @@ jobs:
             exit 1
           fi
 
-          timeout 10s "${NEXT_BIN}" -n1 /bin/true >/tmp/slurm-next-functional.txt 2>&1 || true
-          if ! grep -Eqi "Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|configuration source|Could not establish a configuration source" /tmp/slurm-next-functional.txt; then
+          set +e
+          SLURM_CONF="${NEXT_CONF}" timeout 10s "${NEXT_RUNNER}" -N1 -n1 /bin/true >/tmp/slurm-next-functional.txt 2>&1
+          NEXT_RUN_RC=$?
+          set -e
+          if [ "${NEXT_RUN_RC}" -eq 0 ] \
+             || [ "${NEXT_RUN_RC}" -eq 124 ] \
+             || ! grep -Fqi "Unable to contact slurm controller (connect failure)" /tmp/slurm-next-functional.txt \
+             || grep -Eqi "Munge|authentication error|Unable to establish configuration source|resolve_ctls_from_dns_srv|fetch_config|Could not establish a configuration source" /tmp/slurm-next-functional.txt; then
             cat /tmp/slurm-next-functional.txt || true
             echo "next_installed_version=not_installed" >> "$GITHUB_OUTPUT"
             echo "decision=next_install_failed" >> "$GITHUB_OUTPUT"
@@ -387,11 +584,11 @@ jobs:
           echo "next_installed_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           if [ "${CURRENT}" = "${LATEST}" ]; then
             echo "decision=metadata_review_required" >> "$GITHUB_OUTPUT"
-            echo "regression_result=Tests 1-5 baseline must be older than the latest stable release" >> "$GITHUB_OUTPUT"
-            echo "comparison=Pinned baseline already matches the latest stable upstream release. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
+            echo "regression_result=Tests 1-5 baseline must be older than the pinned regression candidate" >> "$GITHUB_OUTPUT"
+            echo "comparison=Pinned baseline already matches the configured regression candidate. Repin Tests 1-5 to an older dashboard-aligned baseline so Test 6 validates a newer Arm64 release." >> "$GITHUB_OUTPUT"
             echo "Next version installed on Arm64: ${NEXT_VERSION}"
-            echo "Regression install result: Tests 1-5 baseline must be older than the latest stable release"
-            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "Regression install result: Tests 1-5 baseline must be older than the pinned regression candidate"
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
           else
             echo "decision=next_install_validated" >> "$GITHUB_OUTPUT"
             echo "regression_result=Next version installed successfully on Arm64" >> "$GITHUB_OUTPUT"
@@ -416,17 +613,20 @@ jobs:
               next_install_validated|safe_to_upgrade)
                 REGRESSION_RESULT="Next version installed successfully on Arm64"
                 ;;
-              next_install_failed|next_lookup_failed)
+              next_install_failed|next_lookup_failed|next_regression_failed)
                 REGRESSION_RESULT="Next version install failed on Arm64"
                 ;;
               metadata_review_required|current_is_latest_stable|pinned_is_latest|already_current|already_at_latest|at_latest|current_is_latest|current_is_latest_validated_release|current_is_latest_validated_3_2_x|pinned_latest_eol)
-                REGRESSION_RESULT="Tests 1-5 baseline must be older than the latest stable release"
+                REGRESSION_RESULT="Tests 1-5 baseline must be older than the pinned regression candidate"
                 ;;
-              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|metadata_review_required|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
+              baseline_failed)
+                REGRESSION_RESULT="Regression validation skipped because baseline validation failed"
+                ;;
+              hold_current|hold_current_until_regression_run|hold_current_arm_dependency_gap|upgrade_candidate_available|manual_review_needed|manual_review_needed_for_product_upgrade|keep_current)
                 REGRESSION_RESULT="Pending regression install validation"
                 ;;
               *)
-                if [ "${{ steps.test6.outputs.status || 'skipped' }}" = "passed" ]; then
+                if [ "${{ steps.test6.outputs.status || 'failed' }}" = "passed" ]; then
                   REGRESSION_RESULT="Regression validation passed"
                 else
                   REGRESSION_RESULT="Regression validation failed"
@@ -436,7 +636,7 @@ jobs:
           fi
 
           echo "=== Regression Validation (Next Version Install) ==="
-          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || steps.metadata.outputs.current_version || 'unknown' }}"
+          echo "Current version tested in Tests 1-5: ${{ steps.test6.outputs.current_version || steps.version.outputs.version || 'unknown' }}"
           echo "Next version targeted for install validation: ${{ steps.test6.outputs.latest_version || steps.version.outputs.latest || 'unknown' }}"
           echo "Next version installed on Arm64: ${{ steps.test6.outputs.next_installed_version || 'not_installed' }}"
           echo "Regression install result: ${REGRESSION_RESULT}"
@@ -448,6 +648,7 @@ jobs:
         run: |
           PASSED=0
           FAILED=0
+          SKIPPED=0
           CORE_FAILED=0
           TOTAL_DURATION=0
 
@@ -468,16 +669,19 @@ jobs:
           check_core_test "${{ steps.test3.outputs.status || 'failed' }}" "${{ steps.test3.outputs.duration || 0 }}"
           check_core_test "${{ steps.test4.outputs.status || 'failed' }}" "${{ steps.test4.outputs.duration || 0 }}"
           check_core_test "${{ steps.test5.outputs.status || 'failed' }}" "${{ steps.test5.outputs.duration || 0 }}"
-          TEST6_STATUS="${{ steps.test6.outputs.status || 'skipped' }}"
+          TEST6_STATUS="${{ steps.test6.outputs.status || 'failed' }}"
           if [ "$TEST6_STATUS" = "passed" ]; then
             PASSED=$((PASSED + 1))
           elif [ "$TEST6_STATUS" = "failed" ]; then
             FAILED=$((FAILED + 1))
+          else
+            SKIPPED=$((SKIPPED + 1))
           fi
           TOTAL_DURATION=$((TOTAL_DURATION + ${{ steps.test6.outputs.duration || 0 }}))
 
           echo "passed=${PASSED}" >> "$GITHUB_OUTPUT"
           echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+          echo "skipped=${SKIPPED}" >> "$GITHUB_OUTPUT"
           echo "core_failed=${CORE_FAILED}" >> "$GITHUB_OUTPUT"
           echo "duration=${TOTAL_DURATION}" >> "$GITHUB_OUTPUT"
 
@@ -493,7 +697,7 @@ jobs:
             echo "badge_status=failing" >> "$GITHUB_OUTPUT"
           fi
 
-          if [ "${CORE_FAILED}" -ne 0 ]; then
+          if [ "${FAILED}" -ne 0 ]; then
             exit 1
           fi
 
@@ -505,7 +709,7 @@ jobs:
             echo "## Slurm Test Results"
             echo ""
             echo "- Pinned version: \`${{ steps.version.outputs.version }}\`"
-            echo "- Latest upstream: \`${{ steps.version.outputs.latest }}\`"
+            echo "- Pinned regression candidate: \`${{ steps.version.outputs.latest }}\`"
             echo "- Overall status: \`${{ steps.summary.outputs.overall_status || 'failure' }}\`"
             echo ""
             echo "| Test | Status | Duration (s) |"
@@ -515,7 +719,7 @@ jobs:
             echo "| Test 3 - Check help output | ${{ steps.test3.outputs.status || 'skipped' }} | ${{ steps.test3.outputs.duration || 0 }} |"
             echo "| Test 4 - Architecture verification | ${{ steps.test4.outputs.status || 'skipped' }} | ${{ steps.test4.outputs.duration || 0 }} |"
             echo "| Test 5 - Functional validation | ${{ steps.test5.outputs.status || 'skipped' }} | ${{ steps.test5.outputs.duration || 0 }} |"
-            echo "| Test 6 - Regression Validation | ${{ steps.test6.outputs.status || 'skipped' }} | ${{ steps.test6.outputs.duration || 0 }} |"
+            echo "| Test 6 - Regression Validation | ${{ steps.test6.outputs.status || 'failed' }} | ${{ steps.test6.outputs.duration || 0 }} |"
             echo ""
             echo "### Regression Validation (Next Version Install)"
             echo "- Current pinned version: \`${{ steps.test6.outputs.current_version || steps.version.outputs.version }}\`"
