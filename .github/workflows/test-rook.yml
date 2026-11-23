@@ -127,16 +127,61 @@ jobs:
           set -euo pipefail
           bash .github/actions/apt-bootstrap/bootstrap.sh --packages "build-essential ca-certificates curl file git"
           WORKDIR=$(mktemp -d)
-          curl -fsSL "https://go.dev/dl/go${GO_TOOLCHAIN_VERSION}.linux-arm64.tar.gz" -o "$WORKDIR/go.tar.gz"
+          export DOWNLOAD_ATTEMPTS=5
+          export DOWNLOAD_RETRY_DELAY=5
+          export DOWNLOAD_CONNECT_TIMEOUT=30
+          export DOWNLOAD_MAX_TIME=600
+          bash .github/scripts/download-with-fallback.sh \
+            "$WORKDIR/go.tar.gz" \
+            "https://go.dev/dl/go${GO_TOOLCHAIN_VERSION}.linux-arm64.tar.gz" \
+            "https://dl.google.com/go/go${GO_TOOLCHAIN_VERSION}.linux-arm64.tar.gz"
           mkdir -p "$WORKDIR/toolchain"
           tar -C "$WORKDIR/toolchain" -xzf "$WORKDIR/go.tar.gz"
           GO_BIN="$WORKDIR/toolchain/go/bin/go"
           REPO_DIR="$WORKDIR/rook"
-          git clone --branch "v${BASELINE_VERSION}" --depth 1 https://github.com/rook/rook.git "$REPO_DIR"
+
+          clone_rook() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              rm -rf "$REPO_DIR"
+              if git -c http.version=HTTP/1.1 clone \
+                --branch "v${BASELINE_VERSION}" \
+                --depth 1 \
+                https://github.com/rook/rook.git \
+                "$REPO_DIR"; then
+                return 0
+              fi
+              echo "Rook clone attempt ${attempt}/5 failed; retrying." >&2
+              sleep $((attempt * 5))
+            done
+            echo "Rook clone failed after 5 attempts." >&2
+            return 1
+          }
+
+          download_go_modules() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if GODEBUG=http2client=0 \
+                CGO_ENABLED=0 \
+                GOPROXY="https://proxy.golang.org|direct" \
+                "$GO_BIN" mod download; then
+                return 0
+              fi
+              echo "Go module download attempt ${attempt}/5 failed; retrying." >&2
+              sleep $((attempt * 10))
+            done
+            echo "Go module download failed after 5 attempts." >&2
+            return 1
+          }
+
+          clone_rook
           (
             cd "$REPO_DIR"
-            CGO_ENABLED=0 "$GO_BIN" mod download
-            CGO_ENABLED=0 "$GO_BIN" build \
+            download_go_modules
+            GODEBUG=http2client=0 \
+              CGO_ENABLED=0 \
+              GOPROXY="https://proxy.golang.org|direct" \
+              "$GO_BIN" build \
               -ldflags "-s -w -X github.com/rook/rook/pkg/version.Version=v${BASELINE_VERSION}" \
               -o "$WORKDIR/rook-baseline" \
               ./cmd/rook
