@@ -4,34 +4,56 @@ name: content-deploy
 
 # Controls when the workflow will run
 on:
- # Triggers the workflow on push to production branch
+  # Triggers the workflow on push to production branch
   push:
-    branches: [ production ]
+    branches: [production]
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      validate_ssh_only:
+        description: Validate the pinned runner's Akamai NetStorage SSH support without deploying
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
+  validate_netstorage_ssh_client:
+    name: Validate NetStorage SSH client
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Require Akamai DSA host-key support
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -V
+          ssh -Q HostKeyAlgorithms | grep -Fx ssh-dss
+          ssh -G -o HostKeyAlgorithms=+ssh-dss netstorage.invalid >/dev/null
+
   build_and_deploy:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    name: Build and deploy production content
+    needs: validate_netstorage_ssh_client
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.validate_ssh_only == false }}
+    runs-on: ubuntu-24.04-arm
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true  # Fetch Hugo Themes
-          fetch-depth: 0 
+          fetch-depth: 0
 
       # Sets Up Hugo
       - name: Setup Hugo
-        uses: peaceiris/actions-hugo@v2
+        uses: peaceiris/actions-hugo@v3
         with:
-            hugo-version: '0.98.0'
-            extended: true
-            
+          hugo-version: '0.98.0'
+          extended: true
+
       # Post-CSS install
       - name: Install Post-CSS
         run: npm install postcss-cli
@@ -41,28 +63,29 @@ jobs:
         run: |
           export HUGO_PRODUCTION=true
           hugo --minify
-      
-        
+
       #  Copy SSH Key
       - name: copy key
         run: |
-            echo $SSH_KEY | xargs -n 1 > tmpkey
-            base64 -d < tmpkey > key
-            chmod 400 key
+          printf '%s' "$SSH_KEY" | tr -d '[:space:]' | base64 -d > key
+          chmod 400 key
         shell: bash
         env:
-          SSH_KEY: ${{secrets.SSH_KEY}}
-          
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+
       # SCP Site contents to netstorage
       - name: copy site content
         run: |
           cd public
           zip -r public.zip .
           cd ..
-          scp -i key -o StrictHostKeyChecking=accept-new -oHostKeyAlgorithms=+ssh-dss -r public/public.zip $USR@$HOST:/$ID/
+          scp -i key \
+            -o StrictHostKeyChecking=accept-new \
+            -o HostKeyAlgorithms=+ssh-dss \
+            public/public.zip \
+            "${USR}@${HOST}:/${ID}/"
         shell: bash
         env:
-          USR: ${{secrets.SSH_USERNAME}}
-          HOST: ${{secrets.SSH_HOST}}
-          ID: ${{secrets.ID}}
-
+          USR: ${{ secrets.SSH_USERNAME }}
+          HOST: ${{ secrets.SSH_HOST }}
+          ID: ${{ secrets.ID }}
